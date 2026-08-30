@@ -24,6 +24,7 @@ let nfcInstance = null;
 let nextTabId = 1;
 const tabs = new Map(); // id -> { id, view, title, url }
 let activeTabId = null;
+let isQuitting = false;
 
 function allowMediaPermission(permission) {
   return (
@@ -46,37 +47,46 @@ function getContentBounds() {
 }
 
 function layoutViews() {
-  if (!win || !tabBarView) return;
+  if (isQuitting || !win || win.isDestroyed() || !tabBarView) return;
 
-  const { width } = win.getContentBounds();
-  tabBarView.setBounds({ x: 0, y: 0, width, height: TAB_BAR_HEIGHT });
+  try {
+    const { width } = win.getContentBounds();
+    tabBarView.setBounds({ x: 0, y: 0, width, height: TAB_BAR_HEIGHT });
 
-  const contentBounds = getContentBounds();
-  for (const tab of tabs.values()) {
-    if (tab.id === activeTabId) {
-      tab.view.setBounds(contentBounds);
-      tab.view.setVisible(true);
-    } else {
-      tab.view.setVisible(false);
-      // Keep inactive tabs off-screen so they don't steal clicks
-      tab.view.setBounds({ x: 0, y: -10000, width: contentBounds.width, height: contentBounds.height });
+    const contentBounds = getContentBounds();
+    for (const tab of tabs.values()) {
+      if (!tab.view || tab.view.webContents.isDestroyed()) continue;
+      if (tab.id === activeTabId) {
+        tab.view.setBounds(contentBounds);
+        tab.view.setVisible(true);
+      } else {
+        tab.view.setVisible(false);
+        // Keep inactive tabs off-screen so they don't steal clicks
+        tab.view.setBounds({ x: 0, y: -10000, width: contentBounds.width, height: contentBounds.height });
+      }
     }
+  } catch (_) {
+    // Ignore layout during window teardown
   }
 }
 
 function sendTabState() {
-  if (!tabBarView || tabBarView.webContents.isDestroyed()) return;
+  if (isQuitting || !tabBarView || tabBarView.webContents.isDestroyed()) return;
 
-  const list = Array.from(tabs.values()).map((tab) => ({
-    id: tab.id,
-    title: tab.title,
-    url: tab.url,
-  }));
+  try {
+    const list = Array.from(tabs.values()).map((tab) => ({
+      id: tab.id,
+      title: tab.title,
+      url: tab.url,
+    }));
 
-  tabBarView.webContents.send('tabs:state', {
-    tabs: list,
-    activeId: activeTabId,
-  });
+    tabBarView.webContents.send('tabs:state', {
+      tabs: list,
+      activeId: activeTabId,
+    });
+  } catch (_) {
+    // Ignore IPC during window teardown
+  }
 }
 
 /** Tab label from URL path/action, e.g. /patients/view?id=1 → patients/view */
@@ -138,7 +148,7 @@ function wireTabWindowOpen(tab) {
 }
 
 function createTab(url = YII2_URL) {
-  if (!win) return null;
+  if (isQuitting || !win || win.isDestroyed()) return null;
 
   const id = nextTabId++;
   const view = new WebContentsView({
@@ -175,6 +185,7 @@ function createTab(url = YII2_URL) {
 
   view.webContents.on('destroyed', () => {
     tabs.delete(id);
+    if (isQuitting) return;
     if (activeTabId === id) {
       const remaining = Array.from(tabs.keys());
       activeTabId = remaining.length ? remaining[remaining.length - 1] : null;
@@ -261,6 +272,18 @@ function createWindow() {
 
   win.on('resize', layoutViews);
 
+  win.on('close', () => {
+    isQuitting = true;
+    stopNFC();
+  });
+
+  win.on('closed', () => {
+    tabs.clear();
+    activeTabId = null;
+    tabBarView = null;
+    win = null;
+  });
+
   createTab(YII2_URL);
   layoutViews();
   win.show();
@@ -317,7 +340,35 @@ function startNFC() {
   handleNFCEvent({ event: 'ready' });
 }
 
+function stopNFC() {
+  if (!nfcInstance) return;
+
+  try {
+    const readers = nfcInstance.readers;
+    if (readers) {
+      const list = readers instanceof Map ? Array.from(readers.values()) : Object.values(readers);
+      for (const reader of list) {
+        try {
+          if (reader && typeof reader.close === 'function') reader.close();
+        } catch (_) {}
+      }
+    }
+  } catch (_) {}
+
+  try {
+    if (typeof nfcInstance.close === 'function') nfcInstance.close();
+  } catch (_) {}
+
+  try {
+    nfcInstance.removeAllListeners();
+  } catch (_) {}
+
+  nfcInstance = null;
+}
+
 function handleNFCEvent(msg) {
+  if (isQuitting) return;
+
   // Send to every hospital tab — active tab alone can miss the user-edit page
   const targets = [];
   for (const tab of tabs.values()) {
@@ -428,7 +479,18 @@ app.whenReady().then(async () => {
   startNFC();
 });
 
+app.on('before-quit', () => {
+  isQuitting = true;
+  stopNFC();
+});
+
 app.on('window-all-closed', () => {
-  nfcInstance = null;
+  stopNFC();
   app.quit();
+});
+
+// Prevent uncaught NFC/native errors from showing a dialog on quit
+process.on('uncaughtException', (err) => {
+  if (isQuitting) return;
+  console.error('Uncaught exception:', err);
 });
