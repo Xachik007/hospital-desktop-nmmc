@@ -64,6 +64,7 @@ html, body {
   font-size: 12px;
 }
 
+.tab-reload,
 .tab-close {
   width: 18px;
   height: 18px;
@@ -71,14 +72,19 @@ html, body {
   border-radius: 50%;
   background: transparent;
   color: inherit;
-  font-size: 14px;
   line-height: 1;
   cursor: pointer;
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  flex-shrink: 0;
 }
 
+.tab-close {
+  font-size: 14px;
+}
+
+.tab-reload:hover,
 .tab-close:hover {
   background: rgba(15, 23, 42, 0.12);
 }

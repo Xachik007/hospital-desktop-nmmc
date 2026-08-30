@@ -207,6 +207,12 @@ function activateTab(id) {
   sendTabState();
 }
 
+function reloadTab(id) {
+  const tab = tabs.get(id);
+  if (!tab || tab.view.webContents.isDestroyed()) return;
+  tab.view.webContents.reload();
+}
+
 function closeTab(id) {
   const tab = tabs.get(id);
   if (!tab) return;
@@ -464,6 +470,10 @@ app.whenReady().then(async () => {
 
   ipcMain.on('tabs:close', (_event, id) => {
     closeTab(id);
+  });
+
+  ipcMain.on('tabs:reload', (_event, id) => {
+    reloadTab(id);
   });
 
   ipcMain.handle('devtools:open', (event) => {

@@ -13,10 +13,10 @@ This project is **not** the hospital backend itself. The real UI and business lo
 
 ## Requirements
 
-- **Node.js** 18+ (recommended)
+- **Node.js** 24.3.0 (recommended; 24+)
 - Access to the hospital web URL (set in `main.js` as `YII2_URL`)
 - Optional: USB NFC reader (e.g. ACS ACR122U) + drivers
-- **Windows:** Windows **10 / 11** (x64) — Windows 7 is **not** supported
+- **Windows:** Windows **10 / 11** (x64) — Windows 7 is **not** supported. Building NFC native modules also needs **Visual Studio 2022 Build Tools** with the C++ workload (VS 2017 is not enough).
 - **macOS:** recent macOS for building/running the `.dmg`
 
 ---
