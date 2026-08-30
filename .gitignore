@@ -1,0 +1,11 @@
+node_modules/
+dist/
+out/
+*.log
+.DS_Store
+*.dmg
+*.exe
+*.AppImage
+*.blockmap
+.idea/
+.vscode/

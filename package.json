@@ -1,0 +1,112 @@
+{
+  "name": "hospital-desktop",
+  "version": "1.0.0",
+  "description": "Hospital desktop app with NFC login",
+  "main": "main.js",
+  "author": "Hospital",
+  "license": "UNLICENSED",
+  "scripts": {
+    "start": "electron .",
+    "rebuild:nfc": "npm explore @pokusew/pcsclite -- npm install nan@latest --no-save && electron-rebuild -f -w @pokusew/pcsclite",
+    "postinstall": "npm run rebuild:nfc",
+    "pack": "npm run rebuild:nfc && electron-builder --dir",
+    "dist": "npm run rebuild:nfc && electron-builder --mac --win",
+    "dist:mac": "npm run rebuild:nfc && electron-builder --mac",
+    "dist:win": "npm run rebuild:nfc && electron-builder --win"
+  },
+  "dependencies": {
+    "nfc-pcsc": "^0.8.1"
+  },
+  "devDependencies": {
+    "@electron/rebuild": "^3.7.1",
+    "electron": "^42.2.0",
+    "electron-builder": "^26.0.12"
+  },
+  "overrides": {
+    "nan": "^2.28.0"
+  },
+  "build": {
+    "appId": "loc.norqmarash.hospital-desktop",
+    "productName": "Hospital Desktop",
+    "copyright": "Copyright © Hospital",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "preload-tabs.js",
+      "tabs.html",
+      "tabs.js",
+      "tabs.css",
+      "package.json",
+      "build/icon.png",
+      "build/icon.ico",
+      "node_modules/**/*"
+    ],
+    "asar": true,
+    "npmRebuild": true,
+    "asarUnpack": [
+      "node_modules/nfc-pcsc/**/*",
+      "node_modules/@pokusew/**/*",
+      "node_modules/bindings/**/*",
+      "node_modules/file-uri-to-path/**/*",
+      "**/*.node"
+    ],
+    "mac": {
+      "icon": "build/icon.icns",
+      "category": "public.app-category.medical",
+      "target": [
+        "dmg",
+        "zip"
+      ],
+      "hardenedRuntime": true,
+      "gatekeeperAssess": false,
+      "entitlements": "build/entitlements.mac.plist",
+      "entitlementsInherit": "build/entitlements.mac.plist",
+      "extendInfo": {
+        "NSMicrophoneUsageDescription": "Hospital Desktop needs microphone access to record voice notes for patient surgery media."
+      },
+      "identity": null
+    },
+    "dmg": {
+      "contents": [
+        {
+          "x": 130,
+          "y": 220
+        },
+        {
+          "x": 410,
+          "y": 220,
+          "type": "link",
+          "path": "/Applications"
+        }
+      ]
+    },
+    "win": {
+      "icon": "build/icon.ico",
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        },
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Hospital Desktop"
+    }
+  }
+}
