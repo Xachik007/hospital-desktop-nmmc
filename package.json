@@ -35,6 +35,7 @@
     },
     "files": [
       "main.js",
+      "config.json",
       "preload.js",
       "preload-tabs.js",
       "tabs.html",
@@ -44,6 +45,9 @@
       "build/icon.png",
       "build/icon.ico",
       "node_modules/**/*"
+    ],
+    "extraFiles": [
+      "config.json"
     ],
     "asar": true,
     "npmRebuild": true,

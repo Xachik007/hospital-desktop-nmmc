@@ -1,21 +1,89 @@
-const { app, BaseWindow, session, ipcMain, WebContentsView, systemPreferences, Menu } = require('electron');
+const { app, BaseWindow, dialog, session, ipcMain, WebContentsView, systemPreferences, Menu } = require('electron');
+const fs = require('fs');
 const path = require('path');
 
-// const YII2_URL = 'http://192.168.1.210';
-// const YII2_ORIGIN = 'http://192.168.1.210';
-const YII2_URL = 'http://norqmarash.loc';
-const YII2_ORIGIN = 'http://norqmarash.loc';
 const TAB_BAR_HEIGHT = 40;
+
+function loadProjectConfig() {
+  const candidates = [];
+
+  // Packaged app: editable copy sits next to the .exe (Windows)
+  // or in Contents/ (macOS), outside the read-only app bundle.
+  if (app.isPackaged) {
+    const exeDir = path.dirname(process.execPath);
+    candidates.push(path.join(exeDir, 'config.json'));
+    candidates.push(path.join(exeDir, '..', 'config.json'));
+  }
+
+  candidates.push(path.join(__dirname, 'config.json'));
+
+  let file = null;
+  for (const candidate of candidates) {
+    if (fs.existsSync(candidate)) {
+      file = candidate;
+      break;
+    }
+  }
+
+  if (!file) {
+    throw new Error('config.json was not found. Put it next to the app, or in the project folder.');
+  }
+
+  let raw;
+  try {
+    raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    throw new Error(`Cannot read ${file}: ${err.message}`);
+  }
+
+  if (!raw || typeof raw.url !== 'string' || !raw.url.trim()) {
+    throw new Error('config.json must include a "url" string, for example "http://norqmarash.loc".');
+  }
+
+  let origin;
+  try {
+    origin = new URL(raw.url.trim()).origin;
+  } catch (_) {
+    throw new Error(`config.json "url" is not a valid address: ${raw.url}`);
+  }
+
+  const width = Number(raw.width);
+  const height = Number(raw.height);
+
+  return {
+    file,
+    title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : 'Desktop',
+    url: raw.url.trim(),
+    origin,
+    width: Number.isFinite(width) && width >= 400 ? width : 1280,
+    height: Number.isFinite(height) && height >= 300 ? height : 800,
+    nfc: raw.nfc !== false,
+    microphone: raw.microphone !== false,
+  };
+}
+
+let project = null;
+let configError = null;
+try {
+  project = loadProjectConfig();
+  console.log('Project config:', project.file);
+  console.log('Loading:', project.url);
+} catch (err) {
+  configError = err;
+  console.error(err.message);
+}
+
+// Allow getUserMedia / MediaRecorder on an HTTP site (not HTTPS)
+if (project && project.origin.startsWith('http:')) {
+  app.commandLine.appendSwitch(
+    'unsafely-treat-insecure-origin-as-secure',
+    project.origin
+  );
+}
 const APP_ICON = path.join(
   __dirname,
   'build',
   process.platform === 'win32' ? 'icon.ico' : 'icon.png'
-);
-
-// Allow getUserMedia / MediaRecorder on the hospital HTTP origin (not HTTPS)
-app.commandLine.appendSwitch(
-  'unsafely-treat-insecure-origin-as-secure',
-  YII2_ORIGIN
 );
 
 let win = null;
@@ -36,7 +104,14 @@ function allowMediaPermission(permission) {
 }
 
 function getContentBounds() {
-  if (!win) return { x: 0, y: TAB_BAR_HEIGHT, width: 1280, height: 760 };
+  if (!win) {
+    return {
+      x: 0,
+      y: TAB_BAR_HEIGHT,
+      width: project ? project.width : 1280,
+      height: project ? Math.max(0, project.height - TAB_BAR_HEIGHT) : 760,
+    };
+  }
   const { width, height } = win.getContentBounds();
   return {
     x: 0,
@@ -94,7 +169,7 @@ function titleFromUrl(rawUrl) {
   if (!rawUrl) return 'Home';
 
   try {
-    const parsed = new URL(rawUrl, YII2_URL);
+    const parsed = new URL(rawUrl, project.url);
     let pathname = decodeURIComponent(parsed.pathname || '/').replace(/\/+/g, '/');
     if (pathname.length > 1) pathname = pathname.replace(/\/$/, '');
 
@@ -141,13 +216,13 @@ function wireTabWindowOpen(tab) {
     if (url && url !== 'about:blank') {
       createTab(url);
     } else {
-      createTab(YII2_URL);
+      createTab(project.url);
     }
     return { action: 'deny' };
   });
 }
 
-function createTab(url = YII2_URL) {
+function createTab(url = project.url) {
   if (isQuitting || !win || win.isDestroyed()) return null;
 
   const id = nextTabId++;
@@ -159,7 +234,7 @@ function createTab(url = YII2_URL) {
     },
   });
 
-  const initialUrl = url || YII2_URL;
+  const initialUrl = url || project.url;
   const tab = {
     id,
     view,
@@ -231,7 +306,7 @@ function closeTab(id) {
   } catch (_) {}
 
   if (tabs.size === 0) {
-    createTab(YII2_URL);
+    createTab(project.url);
     return;
   }
 
@@ -253,11 +328,11 @@ function getActiveWebContents() {
 function createWindow() {
   // BaseWindow has no built-in web page — better for WebContentsView tabs
   win = new BaseWindow({
-    width: 1280,
-    height: 800,
+    width: project.width,
+    height: project.height,
     show: true,
     backgroundColor: '#e8edf2',
-    title: 'Hospital Desktop',
+    title: project.title,
     icon: APP_ICON,
   });
 
@@ -290,7 +365,7 @@ function createWindow() {
     win = null;
   });
 
-  createTab(YII2_URL);
+  createTab(project.url);
   layoutViews();
   win.show();
   win.focus();
@@ -439,6 +514,15 @@ async function requestMicrophoneAccess() {
 }
 
 app.whenReady().then(async () => {
+  if (configError || !project) {
+    dialog.showErrorBox(
+      'Config error',
+      configError ? configError.message : 'config.json could not be loaded.'
+    );
+    app.quit();
+    return;
+  }
+
   // Electron's default File/Edit/View/Window menu — hide on Windows/Linux
   if (process.platform !== 'darwin') {
     Menu.setApplicationMenu(null);
@@ -453,15 +537,15 @@ app.whenReady().then(async () => {
   }
 
   session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-    callback(allowMediaPermission(permission));
+    callback(project.microphone && allowMediaPermission(permission));
   });
 
   session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
-    return allowMediaPermission(permission);
+    return project.microphone && allowMediaPermission(permission);
   });
 
   ipcMain.on('tabs:create', (_event, url) => {
-    createTab(url || YII2_URL);
+    createTab(url || project.url);
   });
 
   ipcMain.on('tabs:activate', (_event, id) => {
@@ -482,11 +566,12 @@ app.whenReady().then(async () => {
     }
   });
 
-  // Ask macOS for mic access so the app appears in System Settings
-  await requestMicrophoneAccess();
+  if (project.microphone) {
+    await requestMicrophoneAccess();
+  }
 
   createWindow();
-  startNFC();
+  if (project.nfc) startNFC();
 });
 
 app.on('before-quit', () => {

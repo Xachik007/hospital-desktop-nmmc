@@ -14,7 +14,7 @@ This project is **not** the hospital backend itself. The real UI and business lo
 ## Requirements
 
 - **Node.js** 24.3.0 (recommended; 24+)
-- Access to the hospital web URL (set in `main.js` as `YII2_URL`)
+- Access to the web project URL (set in `config.json` as `url`)
 - Optional: USB NFC reader (e.g. ACS ACR122U) + drivers
 - **Windows:** Windows **10 / 11** (x64) — Windows 7 is **not** supported. Building NFC native modules also needs **Visual Studio 2022 Build Tools** with the C++ workload (VS 2017 is not enough).
 - **macOS:** recent macOS for building/running the `.dmg`
@@ -25,18 +25,39 @@ This project is **not** the hospital backend itself. The real UI and business lo
 
 | File | Purpose |
 |------|---------|
+| `config.json` | Project settings: site URL, window title, NFC, microphone |
 | `main.js` | Electron main process: window, tabs, mic permissions, NFC events |
 | `nfc-worker.js` | Separate process that talks to the NFC reader (`nfc-pcsc`) |
 | `tabs.html` / `tabs.js` / `tabs.css` | Tab bar UI |
 | `preload-tabs.js` | Secure IPC bridge for the tab bar |
 | `package.json` | Dependencies and `electron-builder` packaging config |
 
-Default hospital URL (edit before production build):
+Project settings live in `config.json`. Change this file, then start the app again. You do not need to edit `main.js` to point the app at another site.
 
-```js
-// main.js
-const YII2_URL = 'http://192.168.1.210';
+```json
+{
+  "title": "Hospital Desktop",
+  "url": "http://norqmarash.loc",
+  "width": 1280,
+  "height": 800,
+  "nfc": true,
+  "microphone": true
+}
 ```
+
+| Field | Meaning |
+|-------|---------|
+| `title` | Window title |
+| `url` | Web project to open |
+| `width` / `height` | Window size |
+| `nfc` | `true` to use the card reader, `false` to turn it off |
+| `microphone` | `true` to allow the microphone, `false` to turn it off |
+
+While developing, the app reads `config.json` in this folder. After you install a built app, it reads `config.json` next to the program first, so you can change the site without building again.
+
+For another project, change `url` and `title`. Set `nfc` and `microphone` to `false` if that site does not need them, then run `npm start` again.
+
+The installer name and the icon still come from `package.json` (`productName`, `appId`, and the icon). Those change only when you build a new installer. `config.json` changes the website, the window title, NFC, and the microphone without a new build.
 
 ---
 
@@ -55,7 +76,7 @@ npm install
 npm start
 ```
 
-Opens Electron and loads `YII2_URL`.
+Opens Electron and loads the `url` from `config.json`.
 
 ---
 
