@@ -37,17 +37,6 @@ function loadProjectConfig() {
     throw new Error(`Cannot read ${file}: ${err.message}`);
   }
 
-  if (!raw || typeof raw.url !== 'string' || !raw.url.trim()) {
-    throw new Error('config.json must include a "url" string, for example "http://norqmarash.loc".');
-  }
-
-  let origin;
-  try {
-    origin = new URL(raw.url.trim()).origin;
-  } catch (_) {
-    throw new Error(`config.json "url" is not a valid address: ${raw.url}`);
-  }
-
   const width = Number(raw.width);
   const height = Number(raw.height);
 
@@ -65,8 +54,8 @@ function loadProjectConfig() {
   return {
     file,
     title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : 'Desktop',
-    url: raw.url.trim(),
-    origin,
+    url: null,
+    origin: null,
     width: Number.isFinite(width) && width >= 400 ? width : 1280,
     height: Number.isFinite(height) && height >= 300 ? height : 800,
     nfc: raw.nfc !== false,
@@ -85,18 +74,35 @@ let configError = null;
 try {
   project = loadProjectConfig();
   console.log('Project config:', project.file);
-  console.log('Loading:', project.url);
+  console.log('Waiting for project assignment from control server.');
 } catch (err) {
   configError = err;
   console.error(err.message);
 }
 
-// Allow getUserMedia / MediaRecorder on an HTTP site (not HTTPS)
-if (project && project.origin.startsWith('http:')) {
-  app.commandLine.appendSwitch(
-    'unsafely-treat-insecure-origin-as-secure',
-    project.origin
-  );
+function applyAssignedProject(assigned) {
+  if (!assigned || !assigned.url) {
+    throw new Error('Control server did not return a project URL.');
+  }
+
+  let origin;
+  try {
+    origin = new URL(String(assigned.url).trim()).origin;
+  } catch (_) {
+    throw new Error(`Assigned project URL is not valid: ${assigned.url}`);
+  }
+
+  project.url = String(assigned.url).trim();
+  project.origin = origin;
+  if (assigned.name) {
+    project.title = String(assigned.name);
+  }
+
+  if (origin.startsWith('http:')) {
+    app.commandLine.appendSwitch('unsafely-treat-insecure-origin-as-secure', origin);
+  }
+
+  console.log('Assigned project:', project.url);
 }
 const APP_ICON = path.join(
   __dirname,
@@ -348,13 +354,18 @@ function getActiveWebContents() {
 }
 
 function presenceUiPayload(result) {
+  const assignedUrl = result && result.project && result.project.url
+    ? result.project.url
+    : (project && project.url ? project.url : '—');
+
   return {
     allowed: Boolean(result && result.allowed),
     status: (result && result.status) || 'pending',
     message: (result && result.message) || 'Waiting for permission.',
-    projectUrl: project.url,
+    projectUrl: assignedUrl,
     machineName: devicePayload ? devicePayload.machine_name : '—',
     windowsUsername: devicePayload ? devicePayload.windows_username : '—',
+    appDeviceId: devicePayload ? devicePayload.app_device_id : '—',
     macAddress: devicePayload ? devicePayload.mac_address : '—',
     localIp: devicePayload ? devicePayload.local_ip : '—',
     publicIp: devicePayload ? devicePayload.public_ip : '—',
@@ -423,7 +434,7 @@ function stopPresenceHeartbeat() {
 
 async function checkPresence(kind) {
   if (!devicePayload) {
-    devicePayload = await presence.collectDeviceInfo(project.url, app.getVersion());
+    devicePayload = await presence.collectDeviceInfo(app.getVersion());
   }
 
   const result =
@@ -435,7 +446,9 @@ async function checkPresence(kind) {
   return result;
 }
 
-async function startHospitalApp() {
+async function startHospitalApp(assignedProject) {
+  applyAssignedProject(assignedProject || (project.url ? { url: project.url, name: project.title } : null));
+
   allowQuitOnWaitingClose = false;
   closeWaitingWindow();
 
@@ -457,6 +470,8 @@ async function startHospitalApp() {
         console.warn('Permission lost:', result.message);
         stopPresenceHeartbeat();
         stopNFC();
+        project.url = null;
+        project.origin = null;
         allowQuitOnWaitingClose = true;
         createWaitingWindow();
         if (win && !win.isDestroyed()) {
@@ -477,9 +492,9 @@ function beginPermissionLoop() {
     if (isQuitting) return;
     try {
       const result = await checkPresence('heartbeat');
-      if (result.allowed) {
+      if (result.allowed && result.project && result.project.url) {
         stopPresenceHeartbeat();
-        await startHospitalApp();
+        await startHospitalApp(result.project);
         return;
       }
       if (result.status === 'blocked') {
@@ -503,11 +518,11 @@ async function ensurePermissionThenStart() {
   createWaitingWindow();
 
   try {
-    devicePayload = await presence.collectDeviceInfo(project.url, app.getVersion());
+    devicePayload = await presence.collectDeviceInfo(app.getVersion());
     const result = await checkPresence('register');
 
-    if (result.allowed) {
-      await startHospitalApp();
+    if (result.allowed && result.project && result.project.url) {
+      await startHospitalApp(result.project);
       return;
     }
 

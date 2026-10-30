@@ -36,6 +36,7 @@
     "files": [
       "main.js",
       "presence.js",
+      "deviceId.js",
       "config.json",
       "preload.js",
       "preload-tabs.js",

@@ -1,5 +1,6 @@
 const os = require('os');
 const { net } = require('electron');
+const { loadOrCreateAppDeviceId } = require('./deviceId');
 
 function pickNetworkIdentity() {
   const interfaces = os.networkInterfaces();
@@ -53,22 +54,19 @@ async function fetchPublicIp() {
   }
 }
 
-async function collectDeviceInfo(projectUrl, appVersion) {
+async function collectDeviceInfo(appVersion) {
   const user = os.userInfo();
   const publicIp = await fetchPublicIp();
   const network = pickNetworkIdentity();
-
-  if (!network.mac) {
-    throw new Error('Could not read a network MAC address on this computer.');
-  }
+  const appDeviceId = loadOrCreateAppDeviceId();
 
   return {
+    app_device_id: appDeviceId,
     machine_name: os.hostname(),
     windows_username: user.username || process.env.USERNAME || process.env.USER || 'unknown',
-    mac_address: network.mac,
+    mac_address: network.mac || undefined,
     local_ip: network.localIp || undefined,
     public_ip: publicIp || undefined,
-    project_url: projectUrl,
     app_version: appVersion || '1.0.0',
   };
 }

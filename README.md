@@ -37,7 +37,6 @@ Project settings live in `config.json`. Change this file, then start the app aga
 ```json
 {
   "title": "Hospital Desktop",
-  "url": "http://norqmarash.loc",
   "width": 1280,
   "height": 800,
   "nfc": true,
@@ -52,8 +51,7 @@ Project settings live in `config.json`. Change this file, then start the app aga
 
 | Field | Meaning |
 |-------|---------|
-| `title` | Window title |
-| `url` | Web project to open |
+| `title` | Default window title |
 | `width` / `height` | Window size |
 | `nfc` | `true` to use the card reader, `false` to turn it off |
 | `microphone` | `true` to allow the microphone, `false` to turn it off |
@@ -61,11 +59,9 @@ Project settings live in `config.json`. Change this file, then start the app aga
 | `control.token` | Desktop API token from the control server `.env` |
 | `control.heartbeat_seconds` | How often the app re-checks permission |
 
-On startup the app registers this PC (name, Windows user, MAC, public IP, project URL) with the control server. Until that project dashboard allows the PC, the app shows a waiting screen and does not load the hospital site.
+On startup the app registers this PC with xlab-projects and waits. In **Waiting desktop apps**, the admin chooses which project URL this app should load, then clicks **Allow**. After that, the desktop app opens the assigned project.
 
-While developing, the app reads `config.json` in this folder. After you install a built app, it reads `config.json` next to the program first, so you can change the site without building again.
-
-For another project, change `url` and `title`. Set `nfc` and `microphone` to `false` if that site does not need them, then run `npm start` again.
+While developing, the app reads `config.json` in this folder. After you install a built app, it reads `config.json` next to the program first.
 
 The installer name and the icon still come from `package.json` (`productName`, `appId`, and the icon). Those change only when you build a new installer. `config.json` changes the website, the window title, NFC, and the microphone without a new build.
 
@@ -77,6 +73,8 @@ The installer name and the icon still come from `package.json` (`productName`, `
 cd /usr/local/var/www/hospital-desktop
 npm install
 ```
+
+> Folder name: `hospital-desktop` (renamed from `hospital-desktop-nmmc`).
 
 ---
 

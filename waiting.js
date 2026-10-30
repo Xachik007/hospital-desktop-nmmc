@@ -25,6 +25,10 @@ function armenianMessage(data) {
     return 'Ստուգվում է թույլտվությունը կառավարման սերվերի հետ…';
   }
 
+  if (data.message && String(data.message).includes('choose a project')) {
+    return 'Սպասում ենք, որ ադմինը ընտրի նախագիծը այս հավելվածի համար։';
+  }
+
   return 'Այս համակարգիչը սպասում է թույլտվության։';
 }
 
@@ -43,6 +47,7 @@ window.presenceUI.onUpdate((data) => {
   setText('project', data.projectUrl);
   setText('machine', data.machineName);
   setText('user', data.windowsUsername);
+  setText('app-device-id', data.appDeviceId);
   setText('mac', data.macAddress);
   setText('local-ip', data.localIp);
   setText('ip', data.publicIp);
