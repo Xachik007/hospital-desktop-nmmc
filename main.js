@@ -1,6 +1,7 @@
-const { app, BaseWindow, dialog, session, ipcMain, WebContentsView, systemPreferences, Menu } = require('electron');
+const { app, BaseWindow, BrowserWindow, dialog, session, ipcMain, WebContentsView, systemPreferences, Menu } = require('electron');
 const fs = require('fs');
 const path = require('path');
+const presence = require('./presence');
 
 const TAB_BAR_HEIGHT = 40;
 
@@ -50,6 +51,17 @@ function loadProjectConfig() {
   const width = Number(raw.width);
   const height = Number(raw.height);
 
+  const controlRaw = raw.control && typeof raw.control === 'object' ? raw.control : {};
+  const controlUrl = typeof controlRaw.url === 'string' ? controlRaw.url.trim() : '';
+  const controlToken = typeof controlRaw.token === 'string' ? controlRaw.token.trim() : '';
+  const heartbeatSeconds = Number(controlRaw.heartbeat_seconds);
+
+  if (!controlUrl || !controlToken) {
+    throw new Error(
+      'config.json must include control.url and control.token for permission checks, for example "http://xlab-projects.loc".'
+    );
+  }
+
   return {
     file,
     title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : 'Desktop',
@@ -59,6 +71,12 @@ function loadProjectConfig() {
     height: Number.isFinite(height) && height >= 300 ? height : 800,
     nfc: raw.nfc !== false,
     microphone: raw.microphone !== false,
+    control: {
+      url: controlUrl.replace(/\/$/, ''),
+      token: controlToken,
+      heartbeatSeconds:
+        Number.isFinite(heartbeatSeconds) && heartbeatSeconds >= 5 ? heartbeatSeconds : 15,
+    },
   };
 }
 
@@ -87,12 +105,16 @@ const APP_ICON = path.join(
 );
 
 let win = null;
+let waitingWin = null;
 let tabBarView = null;
 let nfcInstance = null;
 let nextTabId = 1;
 const tabs = new Map(); // id -> { id, view, title, url }
 let activeTabId = null;
 let isQuitting = false;
+let heartbeatTimer = null;
+let devicePayload = null;
+let allowQuitOnWaitingClose = true;
 
 function allowMediaPermission(permission) {
   return (
@@ -323,6 +345,182 @@ function getActiveWebContents() {
   const tab = tabs.get(activeTabId);
   if (!tab || tab.view.webContents.isDestroyed()) return null;
   return tab.view.webContents;
+}
+
+function presenceUiPayload(result) {
+  return {
+    allowed: Boolean(result && result.allowed),
+    status: (result && result.status) || 'pending',
+    message: (result && result.message) || 'Waiting for permission.',
+    projectUrl: project.url,
+    machineName: devicePayload ? devicePayload.machine_name : '—',
+    windowsUsername: devicePayload ? devicePayload.windows_username : '—',
+    macAddress: devicePayload ? devicePayload.mac_address : '—',
+    localIp: devicePayload ? devicePayload.local_ip : '—',
+    publicIp: devicePayload ? devicePayload.public_ip : '—',
+  };
+}
+
+function sendWaitingUpdate(result) {
+  if (!waitingWin || waitingWin.isDestroyed()) return;
+  waitingWin.webContents.send('presence:update', presenceUiPayload(result));
+}
+
+function createWaitingWindow() {
+  waitingWin = new BrowserWindow({
+    width: Math.min(560, project.width),
+    height: Math.min(460, project.height),
+    show: true,
+    resizable: false,
+    maximizable: false,
+    backgroundColor: '#f4f7fb',
+    title: `${project.title} — թույլտվություն`,
+    icon: APP_ICON,
+    webPreferences: {
+      preload: path.join(__dirname, 'preload-waiting.js'),
+      contextIsolation: true,
+      nodeIntegration: false,
+    },
+  });
+
+  waitingWin.setMenuBarVisibility(false);
+  waitingWin.loadFile(path.join(__dirname, 'waiting.html'));
+
+  waitingWin.webContents.on('did-finish-load', () => {
+    sendWaitingUpdate({
+      allowed: false,
+      status: 'pending',
+      message: 'Checking permission',
+    });
+  });
+
+  waitingWin.on('closed', () => {
+    waitingWin = null;
+    if (allowQuitOnWaitingClose && !win && !isQuitting) {
+      isQuitting = true;
+      stopPresenceHeartbeat();
+      app.quit();
+    }
+  });
+}
+
+function closeWaitingWindow() {
+  if (!waitingWin || waitingWin.isDestroyed()) {
+    waitingWin = null;
+    return;
+  }
+  const current = waitingWin;
+  waitingWin = null;
+  current.close();
+}
+
+function stopPresenceHeartbeat() {
+  if (heartbeatTimer) {
+    clearInterval(heartbeatTimer);
+    heartbeatTimer = null;
+  }
+}
+
+async function checkPresence(kind) {
+  if (!devicePayload) {
+    devicePayload = await presence.collectDeviceInfo(project.url, app.getVersion());
+  }
+
+  const result =
+    kind === 'register'
+      ? await presence.register(project.control, devicePayload)
+      : await presence.heartbeat(project.control, devicePayload);
+
+  sendWaitingUpdate(result);
+  return result;
+}
+
+async function startHospitalApp() {
+  allowQuitOnWaitingClose = false;
+  closeWaitingWindow();
+
+  if (project.microphone) {
+    await requestMicrophoneAccess();
+  }
+
+  createWindow();
+  allowQuitOnWaitingClose = true;
+  if (project.nfc) startNFC();
+
+  stopPresenceHeartbeat();
+  heartbeatTimer = setInterval(() => {
+    if (isQuitting || !devicePayload) return;
+    presence
+      .heartbeat(project.control, devicePayload)
+      .then((result) => {
+        if (result.allowed) return;
+        console.warn('Permission lost:', result.message);
+        stopPresenceHeartbeat();
+        stopNFC();
+        allowQuitOnWaitingClose = true;
+        createWaitingWindow();
+        if (win && !win.isDestroyed()) {
+          win.close();
+        }
+        beginPermissionLoop();
+      })
+      .catch((err) => {
+        console.warn('Heartbeat failed:', err.message);
+      });
+  }, project.control.heartbeatSeconds * 1000);
+}
+
+function beginPermissionLoop() {
+  stopPresenceHeartbeat();
+
+  const tick = async () => {
+    if (isQuitting) return;
+    try {
+      const result = await checkPresence('heartbeat');
+      if (result.allowed) {
+        stopPresenceHeartbeat();
+        await startHospitalApp();
+        return;
+      }
+      if (result.status === 'blocked') {
+        stopPresenceHeartbeat();
+      }
+    } catch (err) {
+      sendWaitingUpdate({
+        allowed: false,
+        status: 'pending',
+        message: `Cannot reach control server: ${err.message}`,
+        error: err.message,
+      });
+    }
+  };
+
+  heartbeatTimer = setInterval(tick, project.control.heartbeatSeconds * 1000);
+  tick();
+}
+
+async function ensurePermissionThenStart() {
+  createWaitingWindow();
+
+  try {
+    devicePayload = await presence.collectDeviceInfo(project.url, app.getVersion());
+    const result = await checkPresence('register');
+
+    if (result.allowed) {
+      await startHospitalApp();
+      return;
+    }
+
+    beginPermissionLoop();
+  } catch (err) {
+    console.error('Permission check failed:', err);
+    sendWaitingUpdate({
+      allowed: false,
+      status: 'pending',
+      message: err.message || 'Permission check failed.',
+    });
+    beginPermissionLoop();
+  }
 }
 
 function createWindow() {
@@ -566,20 +764,20 @@ app.whenReady().then(async () => {
     }
   });
 
-  if (project.microphone) {
-    await requestMicrophoneAccess();
-  }
-
-  createWindow();
-  if (project.nfc) startNFC();
+  await ensurePermissionThenStart();
 });
 
 app.on('before-quit', () => {
   isQuitting = true;
+  stopPresenceHeartbeat();
   stopNFC();
 });
 
 app.on('window-all-closed', () => {
+  if (waitingWin && !waitingWin.isDestroyed()) {
+    return;
+  }
+  stopPresenceHeartbeat();
   stopNFC();
   app.quit();
 });

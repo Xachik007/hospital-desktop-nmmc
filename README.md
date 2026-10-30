@@ -41,7 +41,12 @@ Project settings live in `config.json`. Change this file, then start the app aga
   "width": 1280,
   "height": 800,
   "nfc": true,
-  "microphone": true
+  "microphone": true,
+  "control": {
+    "url": "http://xlab-projects.loc",
+    "token": "your-desktop-api-token",
+    "heartbeat_seconds": 15
+  }
 }
 ```
 
@@ -52,6 +57,11 @@ Project settings live in `config.json`. Change this file, then start the app aga
 | `width` / `height` | Window size |
 | `nfc` | `true` to use the card reader, `false` to turn it off |
 | `microphone` | `true` to allow the microphone, `false` to turn it off |
+| `control.url` | Xlab control website used for PC permission |
+| `control.token` | Desktop API token from the control server `.env` |
+| `control.heartbeat_seconds` | How often the app re-checks permission |
+
+On startup the app registers this PC (name, Windows user, MAC, public IP, project URL) with the control server. Until that project dashboard allows the PC, the app shows a waiting screen and does not load the hospital site.
 
 While developing, the app reads `config.json` in this folder. After you install a built app, it reads `config.json` next to the program first, so you can change the site without building again.
 
