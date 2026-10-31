@@ -6,7 +6,7 @@
   "microphone": true,
   "control": {
     "url": "http://xlab-projects.loc",
-    "token": "d36a2138b47bfb742bea3c61ad87ac26",
+    "token": "0ae5c2634a059c393226abb29209ec12373fcaab7962af23a34515cf1ce96fe1",
     "heartbeat_seconds": 15
   }
 }
