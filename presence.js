@@ -91,11 +91,39 @@ async function postPresence(control, path, payload) {
     body = { message: `Control server returned HTTP ${response.status}` };
   }
 
+  const serverMessage =
+    typeof body.message === 'string' && body.message.trim()
+      ? body.message.trim()
+      : `Control server returned HTTP ${response.status}`;
+
+  // Server misconfig / bad token — do not look like a normal "waiting for approval" state.
+  if (response.status === 503 || response.status === 401 || response.status === 403) {
+    return {
+      httpStatus: response.status,
+      allowed: false,
+      status: 'error',
+      message: serverMessage,
+      project: body.project || null,
+      body,
+    };
+  }
+
+  if (!response.ok && body.allowed == null) {
+    return {
+      httpStatus: response.status,
+      allowed: false,
+      status: 'error',
+      message: serverMessage,
+      project: body.project || null,
+      body,
+    };
+  }
+
   return {
     httpStatus: response.status,
     allowed: Boolean(body.allowed),
     status: body.status || 'pending',
-    message: body.message || 'Waiting for permission.',
+    message: serverMessage || 'Waiting for permission.',
     project: body.project || null,
     body,
   };
