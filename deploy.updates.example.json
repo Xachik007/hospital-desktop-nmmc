@@ -1,0 +1,7 @@
+{
+  "host": "your-server.example.com",
+  "user": "deploy",
+  "path": "/var/www/xlab-projects/public/desktop-updates",
+  "port": 22,
+  "sshKey": ""
+}

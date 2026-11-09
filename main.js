@@ -2,6 +2,7 @@ const { app, BaseWindow, BrowserWindow, dialog, session, ipcMain, WebContentsVie
 const fs = require('fs');
 const path = require('path');
 const presence = require('./presence');
+const updater = require('./updater');
 
 const TAB_BAR_HEIGHT = 40;
 
@@ -51,6 +52,12 @@ function loadProjectConfig() {
     );
   }
 
+  const updatesRaw = raw.updates && typeof raw.updates === 'object' ? raw.updates : {};
+  const updatesUrl =
+    typeof updatesRaw.url === 'string' && updatesRaw.url.trim()
+      ? updatesRaw.url.trim().replace(/\/$/, '')
+      : `${controlUrl.replace(/\/$/, '')}/desktop-updates`;
+
   return {
     file,
     title: typeof raw.title === 'string' && raw.title.trim() ? raw.title.trim() : 'Desktop',
@@ -65,6 +72,11 @@ function loadProjectConfig() {
       token: controlToken,
       heartbeatSeconds:
         Number.isFinite(heartbeatSeconds) && heartbeatSeconds >= 5 ? heartbeatSeconds : 15,
+    },
+    updates: {
+      enabled: updatesRaw.enabled !== false,
+      url: updatesUrl,
+      checkOnStart: updatesRaw.check_on_start !== false,
     },
   };
 }
@@ -186,6 +198,8 @@ function sendTabState() {
     tabBarView.webContents.send('tabs:state', {
       tabs: list,
       activeId: activeTabId,
+      appTitle: project ? project.title : 'Hospital Desktop',
+      appVersion: app.getVersion(),
     });
   } catch (_) {
     // Ignore IPC during window teardown
@@ -364,6 +378,8 @@ function presenceUiPayload(result) {
     message: (result && result.message) || 'Waiting for permission.',
     httpStatus: result && result.httpStatus ? result.httpStatus : null,
     projectUrl: assignedUrl,
+    appVersion: app.getVersion(),
+    appTitle: project ? project.title : 'Hospital Desktop',
     machineName: devicePayload ? devicePayload.machine_name : '—',
     windowsUsername: devicePayload ? devicePayload.windows_username : '—',
     appDeviceId: devicePayload ? devicePayload.app_device_id : '—',
@@ -371,6 +387,12 @@ function presenceUiPayload(result) {
     localIp: devicePayload ? devicePayload.local_ip : '—',
     publicIp: devicePayload ? devicePayload.public_ip : '—',
   };
+}
+
+function windowTitleWithVersion(base) {
+  const version = app.getVersion();
+  const name = base || (project && project.title) || 'Hospital Desktop';
+  return `${name}  v${version}`;
 }
 
 function sendWaitingUpdate(result) {
@@ -386,7 +408,7 @@ function createWaitingWindow() {
     resizable: false,
     maximizable: false,
     backgroundColor: '#f4f7fb',
-    title: `${project.title} — թույլտվություն`,
+    title: windowTitleWithVersion(`${project.title} — թույլտվություն`),
     icon: APP_ICON,
     webPreferences: {
       preload: path.join(__dirname, 'preload-waiting.js'),
@@ -469,6 +491,52 @@ async function startHospitalApp(assignedProject) {
   createWindow();
   allowQuitOnWaitingClose = true;
   if (project.nfc) startNFC();
+
+  updater.setupAutoUpdates(project, {
+    appIsPackaged: app.isPackaged,
+    onBeforeInstall: () => {
+      // Must close BaseWindow too — BrowserWindow.getAllWindows() does not include it,
+      // and an open main window blocks quitAndInstall on macOS.
+      isQuitting = true;
+      allowQuitOnWaitingClose = true;
+      stopPresenceHeartbeat();
+      stopNFC();
+
+      try {
+        if (waitingWin && !waitingWin.isDestroyed()) {
+          waitingWin.removeAllListeners('close');
+          waitingWin.destroy();
+          waitingWin = null;
+        }
+      } catch (_) {}
+
+      try {
+        if (win && !win.isDestroyed()) {
+          win.removeAllListeners('close');
+          win.removeAllListeners('closed');
+          for (const tab of tabs.values()) {
+            try {
+              if (tab.view && !tab.view.webContents.isDestroyed()) {
+                win.contentView.removeChildView(tab.view);
+              }
+            } catch (_) {}
+          }
+          tabs.clear();
+          activeTabId = null;
+          tabBarView = null;
+          win.destroy();
+          win = null;
+        }
+      } catch (err) {
+        console.warn('Failed to destroy main window before update:', err.message);
+      }
+    },
+  });
+  if (project.updates.checkOnStart) {
+    setTimeout(() => {
+      updater.checkForUpdates({ silent: true }).catch(() => {});
+    }, 4000);
+  }
 
   stopPresenceHeartbeat();
   heartbeatTimer = setInterval(() => {
@@ -555,7 +623,7 @@ function createWindow() {
     height: project.height,
     show: true,
     backgroundColor: '#e8edf2',
-    title: project.title,
+    title: windowTitleWithVersion(project.title),
     icon: APP_ICON,
   });
 
@@ -746,10 +814,43 @@ app.whenReady().then(async () => {
     return;
   }
 
-  // Electron's default File/Edit/View/Window menu — hide on Windows/Linux
-  if (process.platform !== 'darwin') {
-    Menu.setApplicationMenu(null);
-  }
+  try {
+    app.setAboutPanelOptions({
+      applicationName: project.title,
+      applicationVersion: app.getVersion(),
+      version: app.getVersion(),
+    });
+  } catch (_) {}
+
+  // Keep a small menu so users can check for updates manually
+  const template = [
+    ...(process.platform === 'darwin'
+      ? [{
+          label: app.name,
+          submenu: [
+            { role: 'about' },
+            { type: 'separator' },
+            {
+              label: 'Check for Updates…',
+              click: () => updater.checkForUpdatesManual(),
+            },
+            { type: 'separator' },
+            { role: 'quit' },
+          ],
+        }]
+      : []),
+    {
+      label: 'Help',
+      submenu: [
+        {
+          label: 'Check for Updates…',
+          click: () => updater.checkForUpdatesManual(),
+        },
+        ...(process.platform !== 'darwin' ? [{ type: 'separator' }, { role: 'quit' }] : []),
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
 
   if (process.platform === 'darwin' && app.dock) {
     try {

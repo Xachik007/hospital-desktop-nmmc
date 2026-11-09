@@ -34,7 +34,33 @@
       border-radius: 12px;
       padding: 28px 24px;
     }
-    h1 { margin: 0 0 8px; font-size: 1.35rem; }
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      margin-bottom: 12px;
+    }
+    .brand img {
+      width: 44px;
+      height: 44px;
+      border-radius: 10px;
+      border: 1px solid var(--line);
+      background: #fff;
+      object-fit: contain;
+      padding: 4px;
+    }
+    .brand-text h1 { margin: 0 0 4px; font-size: 1.35rem; }
+    .version {
+      display: inline-block;
+      font-size: 0.78rem;
+      font-weight: 700;
+      letter-spacing: 0.02em;
+      color: var(--blue);
+      background: #e8eef8;
+      border: 1px solid #c9d7ea;
+      border-radius: 999px;
+      padding: 2px 9px;
+    }
     p { margin: 0 0 10px; color: var(--muted); line-height: 1.45; }
     .status { font-weight: 650; color: var(--amber); margin-top: 16px; }
     .status.blocked { color: var(--red); }
@@ -62,11 +88,18 @@
 </head>
 <body>
   <div class="card">
+    <div class="brand">
+      <img src="build/icon.png" alt="" />
+      <div class="brand-text">
+        <h1 id="app-title">Hospital Desktop</h1>
+        <span class="version" id="app-version">v…</span>
+      </div>
+    </div>
     <div class="spinner" id="spinner"></div>
-    <h1>Hospital Desktop</h1>
     <p id="message">Ստուգվում է թույլտվությունը կառավարման սերվերի հետ…</p>
     <p class="status" id="status">սպասման մեջ</p>
     <div class="meta">
+      <div><span class="label">Version</span> <span id="version-meta">—</span></div>
       <div><span class="label">Project</span> <span id="project">—</span></div>
       <div><span class="label">PC</span> <span id="machine">—</span></div>
       <div><span class="label">Windows user</span> <span id="user">—</span></div>

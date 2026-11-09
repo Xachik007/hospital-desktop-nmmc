@@ -2,6 +2,15 @@ const tabsEl = document.getElementById('tabs');
 const newTabBtn = document.getElementById('new-tab');
 
 function render(state) {
+  const brand = document.getElementById('app-brand');
+  const brandVersion = document.getElementById('app-brand-version');
+  if (brand && state.appTitle) {
+    brand.title = `${state.appTitle}${state.appVersion ? ` v${state.appVersion}` : ''}`;
+  }
+  if (brandVersion && state.appVersion) {
+    brandVersion.textContent = `v${state.appVersion}`;
+  }
+
   tabsEl.innerHTML = '';
 
   state.tabs.forEach((tab) => {

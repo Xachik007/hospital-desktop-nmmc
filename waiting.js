@@ -50,6 +50,9 @@ window.presenceUI.onUpdate((data) => {
 
   setText('message', armenianMessage(data));
   setText('status', STATUS_HY[statusKey] || statusKey);
+  setText('app-title', data.appTitle || 'Hospital Desktop');
+  setText('app-version', data.appVersion ? `v${data.appVersion}` : 'v…');
+  setText('version-meta', data.appVersion ? `v${data.appVersion}` : '—');
   setText('project', data.projectUrl);
   setText('machine', data.machineName);
   setText('user', data.windowsUsername);

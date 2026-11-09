@@ -58,6 +58,9 @@ Project settings live in `config.json`. Change this file, then start the app aga
 | `control.url` | Xlab control website used for PC permission |
 | `control.token` | Desktop API token from the control server `.env` |
 | `control.heartbeat_seconds` | How often the app re-checks permission |
+| `updates.enabled` | `true` to enable auto-update checks |
+| `updates.url` | Base updates URL (…/desktop-updates) |
+| `updates.check_on_start` | Check for a new version when the app starts |
 
 On startup the app registers this PC with xlab-projects and waits. In **Waiting desktop apps**, the admin chooses which project URL this app should load, then clicks **Allow**. After that, the desktop app opens the assigned project.
 
@@ -177,15 +180,66 @@ Configured via `package.json` → `build.mac.extendInfo` (`NSMicrophoneUsageDesc
 
 ---
 
+## Auto-update (xlab-projects)
+
+Built installers are copied into the sibling Laravel project:
+
+`../xlab-projects/public/desktop-updates/win`  
+`../xlab-projects/public/desktop-updates/mac`
+
+Public URLs (after you deploy xlab-projects):
+
+- `https://xlab-projects.xlab.am/desktop-updates/win/latest.yml`
+- `https://xlab-projects.xlab.am/desktop-updates/mac/latest-mac.yml`
+
+### Release a new version
+
+1. Bump `"version"` in `package.json` (example: `1.0.0` → `1.0.1`)
+2. Build (this also copies/replaces files under xlab-projects):
+
+```bash
+npm run dist:win    # Windows only
+npm run dist:mac    # Mac only
+npm run dist        # both
+```
+
+3. Deploy the folder to the live server:
+
+```bash
+# one-time setup
+cp deploy.updates.example.json deploy.updates.json
+# edit host, user, path (SSH access required)
+
+npm run deploy:updates          # win + mac
+npm run deploy:updates -- mac   # Mac only
+npm run deploy:updates -- win   # Windows only
+```
+
+4. On each PC, open Hospital Desktop → it checks for updates (or use **Help → Check for Updates…**)
+
+Copy into local xlab-projects only (no remote upload):
+
+```bash
+npm run publish:updates
+```
+
+`config.json` → `updates.url` defaults to `{control.url}/desktop-updates`.
+
+> Auto-update works for the **installed NSIS Setup** app on Windows (not the portable `.exe`). Mac updater uses the `.zip` feed.
+
+---
+
 ## Scripts summary
 
 | Command | Description |
 |---------|-------------|
 | `npm install` | Install dependencies |
 | `npm start` | Run app in development |
-| `npm run dist:mac` | Build Mac (`.dmg` + `.zip`) |
-| `npm run dist:win` | Build Windows (setup + portable `.exe`) |
-| `npm run dist` | Build **Mac and Windows** together |
+| `npm run dist:mac` | Build Mac + copy into xlab-projects `desktop-updates/mac` |
+| `npm run dist:win` | Build Windows + copy into xlab-projects `desktop-updates/win` |
+| `npm run dist` | Build **Mac and Windows** + publish both |
+| `npm run publish:updates` | Copy existing `dist/` files into xlab-projects only |
+| `npm run deploy:updates` | Upload `desktop-updates` to the live server via rsync/SSH |
 | `npm run pack` | Build unpacked app folder only |
 
 ---

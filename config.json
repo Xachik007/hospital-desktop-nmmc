@@ -8,5 +8,10 @@
     "url": "https://xlab-projects.xlab.am",
     "token": "0ae5c2634a059c393226abb29209ec12373fcaab7962af23a34515cf1ce96fe1",
     "heartbeat_seconds": 15
+  },
+  "updates": {
+    "enabled": true,
+    "url": "https://xlab-projects.xlab.am/desktop-updates",
+    "check_on_start": true
   }
 }

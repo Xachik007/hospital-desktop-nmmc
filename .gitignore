@@ -9,3 +9,4 @@ out/
 *.blockmap
 .idea/
 .vscode/
+deploy.updates.json

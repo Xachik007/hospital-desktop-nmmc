@@ -1,6 +1,6 @@
 {
   "name": "hospital-desktop",
-  "version": "1.0.0",
+  "version": "1.0.4",
   "description": "Hospital desktop app with NFC login",
   "main": "main.js",
   "author": "Hospital",
@@ -10,11 +10,14 @@
     "rebuild:nfc": "npm explore @pokusew/pcsclite -- npm install nan@latest --no-save && electron-rebuild -f -w @pokusew/pcsclite",
     "postinstall": "npm run rebuild:nfc",
     "pack": "npm run rebuild:nfc && electron-builder --dir",
-    "dist": "npm run rebuild:nfc && electron-builder --mac --win",
-    "dist:mac": "npm run rebuild:nfc && electron-builder --mac",
-    "dist:win": "npm run rebuild:nfc && electron-builder --win"
+    "publish:updates": "node scripts/publish-updates.js",
+    "deploy:updates": "node scripts/deploy-updates.js",
+    "dist": "npm run rebuild:nfc && electron-builder --mac --win --publish never && node scripts/publish-updates.js",
+    "dist:mac": "npm run rebuild:nfc && electron-builder --mac --publish never && node scripts/publish-updates.js mac",
+    "dist:win": "npm run rebuild:nfc && electron-builder --win --publish never && node scripts/publish-updates.js win"
   },
   "dependencies": {
+    "electron-updater": "^6.8.11",
     "nfc-pcsc": "^0.8.1"
   },
   "devDependencies": {
@@ -35,6 +38,7 @@
     },
     "files": [
       "main.js",
+      "updater.js",
       "presence.js",
       "deviceId.js",
       "config.json",
@@ -50,6 +54,13 @@
       "build/icon.png",
       "build/icon.ico",
       "node_modules/**/*"
+    ],
+    "publish": [
+      {
+        "provider": "generic",
+        "url": "https://xlab-projects.xlab.am/desktop-updates/win",
+        "channel": "latest"
+      }
     ],
     "extraFiles": [
       "config.json"
@@ -70,14 +81,20 @@
         "dmg",
         "zip"
       ],
-      "hardenedRuntime": true,
+      "hardenedRuntime": false,
       "gatekeeperAssess": false,
       "entitlements": "build/entitlements.mac.plist",
       "entitlementsInherit": "build/entitlements.mac.plist",
       "extendInfo": {
         "NSMicrophoneUsageDescription": "Hospital Desktop needs microphone access to record voice notes for patient surgery media."
       },
-      "identity": null
+      "identity": null,
+      "publish": [
+        {
+          "provider": "generic",
+          "url": "https://xlab-projects.xlab.am/desktop-updates/mac"
+        }
+      ]
     },
     "dmg": {
       "contents": [
@@ -107,6 +124,12 @@
           "arch": [
             "x64"
           ]
+        }
+      ],
+      "publish": [
+        {
+          "provider": "generic",
+          "url": "https://xlab-projects.xlab.am/desktop-updates/win"
         }
       ]
     },

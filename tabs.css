@@ -22,6 +22,35 @@ html, body {
   border-bottom: 1px solid #c5ced8;
 }
 
+#app-brand {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 30px;
+  padding: 0 8px 0 4px;
+  flex-shrink: 0;
+  -webkit-app-region: no-drag;
+}
+
+#app-brand-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+#app-brand-version {
+  font-size: 11px;
+  font-weight: 700;
+  color: #1d4e89;
+  background: #e8eef8;
+  border: 1px solid #c9d7ea;
+  border-radius: 999px;
+  padding: 1px 7px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
 #tabs {
   display: flex;
   flex: 1;
