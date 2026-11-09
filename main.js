@@ -362,6 +362,7 @@ function presenceUiPayload(result) {
     allowed: Boolean(result && result.allowed),
     status: (result && result.status) || 'pending',
     message: (result && result.message) || 'Waiting for permission.',
+    httpStatus: result && result.httpStatus ? result.httpStatus : null,
     projectUrl: assignedUrl,
     machineName: devicePayload ? devicePayload.machine_name : '—',
     windowsUsername: devicePayload ? devicePayload.windows_username : '—',
@@ -441,6 +442,15 @@ async function checkPresence(kind) {
     kind === 'register'
       ? await presence.register(project.control, devicePayload)
       : await presence.heartbeat(project.control, devicePayload);
+
+  if (result.status === 'error' || (result.httpStatus && result.httpStatus >= 400 && !result.allowed)) {
+    console.warn(
+      `Control ${kind} failed (${result.httpStatus || '?'}):`,
+      result.message
+    );
+  } else {
+    console.log(`Control ${kind}:`, result.status, result.message);
+  }
 
   sendWaitingUpdate(result);
   return result;

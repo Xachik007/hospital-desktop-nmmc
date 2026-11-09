@@ -2,6 +2,7 @@ const STATUS_HY = {
   pending: 'սպասման մեջ',
   approved: 'թույլատրված',
   blocked: 'արգելափակված',
+  error: 'սխալ',
 };
 
 function armenianMessage(data) {
@@ -11,6 +12,11 @@ function armenianMessage(data) {
 
   if (data.status === 'approved' && data.allowed) {
     return 'Այս համակարգիչը թույլատրված է։ Բացվում է նախագիծը…';
+  }
+
+  if (data.status === 'error' || (data.httpStatus && data.httpStatus >= 400)) {
+    const detail = data.message ? String(data.message) : 'unknown error';
+    return `Կառավարման սերվերի սխալ: ${detail}`;
   }
 
   if (data.message && String(data.message).startsWith('Cannot reach')) {
@@ -53,9 +59,9 @@ window.presenceUI.onUpdate((data) => {
   setText('ip', data.publicIp);
 
   statusEl.className = 'status';
-  if (statusKey === 'blocked') {
+  if (statusKey === 'blocked' || statusKey === 'error') {
     statusEl.classList.add('blocked');
-    spinner.style.display = 'none';
+    spinner.style.display = statusKey === 'error' ? 'block' : 'none';
   } else if (statusKey === 'approved' && data.allowed) {
     statusEl.classList.add('allowed');
     spinner.style.display = 'none';
