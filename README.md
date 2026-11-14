@@ -64,6 +64,8 @@ Project settings live in `config.json`. Change this file, then start the app aga
 
 On startup the app registers this PC with xlab-projects and waits. In **Waiting desktop apps**, the admin chooses which project URL this app should load, then clicks **Allow**. After that, the desktop app opens the assigned project.
 
+Copy `config.example.json` to `config.json` and paste `DESKTOP_API_TOKEN` from the control server `.env`. Never commit `config.json` (it is gitignored).
+
 While developing, the app reads `config.json` in this folder. After you install a built app, it reads `config.json` next to the program first.
 
 The installer name and the icon still come from `package.json` (`productName`, `appId`, and the icon). Those change only when you build a new installer. `config.json` changes the website, the window title, NFC, and the microphone without a new build.

@@ -10,3 +10,5 @@ out/
 .idea/
 .vscode/
 deploy.updates.json
+# Contains DESKTOP_API_TOKEN — never commit real secrets
+config.json

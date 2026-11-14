@@ -53,11 +53,21 @@ function loadProjectConfig() {
     );
   }
 
+  assertSafeServiceUrl(controlUrl, 'control.url');
+
   const updatesRaw = raw.updates && typeof raw.updates === 'object' ? raw.updates : {};
   const updatesUrl =
     typeof updatesRaw.url === 'string' && updatesRaw.url.trim()
       ? updatesRaw.url.trim().replace(/\/$/, '')
       : `${controlUrl.replace(/\/$/, '')}/desktop-updates`;
+
+  assertSafeServiceUrl(updatesUrl, 'updates.url');
+
+  if (controlToken === 'PASTE_DESKTOP_API_TOKEN_HERE' || controlToken.length < 32) {
+    throw new Error(
+      'config.json control.token is missing or too short. Copy config.example.json to config.json and paste DESKTOP_API_TOKEN.'
+    );
+  }
 
   return {
     file,
@@ -79,6 +89,62 @@ function loadProjectConfig() {
       url: updatesUrl,
       checkOnStart: updatesRaw.check_on_start !== false,
     },
+  };
+}
+
+function isLocalDevHost(hostname) {
+  const host = String(hostname || '').toLowerCase();
+  return (
+    host === 'localhost' ||
+    host === '127.0.0.1' ||
+    host === '::1' ||
+    host.endsWith('.loc') ||
+    host.endsWith('.local') ||
+    host.endsWith('.test')
+  );
+}
+
+function assertSafeServiceUrl(rawUrl, label) {
+  let parsed;
+  try {
+    parsed = new URL(String(rawUrl).trim());
+  } catch (_) {
+    throw new Error(`${label} is not a valid URL.`);
+  }
+
+  const isLocal = isLocalDevHost(parsed.hostname);
+  if (parsed.protocol === 'https:') return;
+  if (parsed.protocol === 'http:' && isLocal) return;
+  throw new Error(`${label} must use https (http is only allowed for local .loc / localhost).`);
+}
+
+function redactUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  try {
+    const parsed = new URL(rawUrl);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch (_) {
+    return String(rawUrl).split('?')[0].split('#')[0].slice(0, 200);
+  }
+}
+
+function isAllowedHospitalUrl(rawUrl) {
+  if (!project || !project.origin) return false;
+  if (!rawUrl || rawUrl === 'about:blank') return false;
+  try {
+    return new URL(rawUrl).origin === project.origin;
+  } catch (_) {
+    return false;
+  }
+}
+
+function secureWebPreferences(preloadFile) {
+  return {
+    preload: path.join(__dirname, preloadFile),
+    contextIsolation: true,
+    nodeIntegration: false,
+    sandbox: true,
+    webSecurity: true,
   };
 }
 
@@ -258,13 +324,34 @@ function updateTabFromUrl(tab, rawUrl) {
 
 function wireTabWindowOpen(tab) {
   tab.view.webContents.setWindowOpenHandler(({ url }) => {
-    if (url && url !== 'about:blank') {
+    if (isAllowedHospitalUrl(url)) {
       createTab(url);
-    } else {
+    } else if (!url || url === 'about:blank') {
       createTab(project.url);
+    } else {
+      console.warn('Blocked window.open to disallowed origin:', redactUrl(url));
+      reportDesktopLog('warn', 'navigation', 'Blocked window.open outside hospital origin', {
+        url: redactUrl(url),
+      });
     }
     return { action: 'deny' };
   });
+}
+
+function wireTabNavigationGuard(webContents) {
+  if (!webContents || webContents.isDestroyed()) return;
+
+  const blockIfDisallowed = (event, url) => {
+    if (isAllowedHospitalUrl(url)) return;
+    event.preventDefault();
+    console.warn('Blocked navigation outside hospital origin:', redactUrl(url));
+    reportDesktopLog('warn', 'navigation', 'Blocked navigation outside hospital origin', {
+      url: redactUrl(url),
+    });
+  };
+
+  webContents.on('will-navigate', blockIfDisallowed);
+  webContents.on('will-redirect', blockIfDisallowed);
 }
 
 function reportDesktopLog(level, category, message, context) {
@@ -290,7 +377,7 @@ function wireWebContentsDiagnostics(webContents, label) {
       label,
       url: (() => {
         try {
-          return webContents.getURL();
+          return redactUrl(webContents.getURL());
         } catch (_) {
           return null;
         }
@@ -322,7 +409,7 @@ function wireWebContentsDiagnostics(webContents, label) {
       label,
       error_code: errorCode,
       error_description: errorDescription,
-      url: validatedURL,
+      url: redactUrl(validatedURL),
     });
   });
 }
@@ -330,13 +417,16 @@ function wireWebContentsDiagnostics(webContents, label) {
 function createTab(url = project.url) {
   if (isQuitting || !win || win.isDestroyed()) return null;
 
+  const requested = url || project.url;
+  if (!isAllowedHospitalUrl(requested)) {
+    console.warn('Refusing to open tab outside hospital origin:', redactUrl(requested));
+    if (!project.url || !isAllowedHospitalUrl(project.url)) return null;
+    url = project.url;
+  }
+
   const id = nextTabId++;
   const view = new WebContentsView({
-    webPreferences: {
-      preload: path.join(__dirname, 'preload.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+    webPreferences: secureWebPreferences('preload.js'),
   });
 
   const initialUrl = url || project.url;
@@ -350,6 +440,7 @@ function createTab(url = project.url) {
   tabs.set(id, tab);
   win.contentView.addChildView(view);
   wireTabWindowOpen(tab);
+  wireTabNavigationGuard(view.webContents);
   wireWebContentsDiagnostics(view.webContents, `tab:${id}`);
 
   view.webContents.on('did-navigate', (_event, navigatedUrl) => {
@@ -474,11 +565,7 @@ function createWaitingWindow() {
     backgroundColor: '#f4f7fb',
     title: windowTitleWithVersion(`${project.title} — թույլտվություն`),
     icon: APP_ICON,
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-waiting.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+    webPreferences: secureWebPreferences('preload-waiting.js'),
   });
 
   waitingWin.setMenuBarVisibility(false);
@@ -719,11 +806,7 @@ function createWindow() {
   });
 
   tabBarView = new WebContentsView({
-    webPreferences: {
-      preload: path.join(__dirname, 'preload-tabs.js'),
-      contextIsolation: true,
-      nodeIntegration: false,
-    },
+    webPreferences: secureWebPreferences('preload-tabs.js'),
   });
 
   win.contentView.addChildView(tabBarView);
@@ -812,8 +895,6 @@ async function windowsHasSmartCardReader() {
     'powershell.exe',
     [
       '-NoProfile',
-      '-ExecutionPolicy',
-      'Bypass',
       '-Command',
       "(Get-PnpDevice -Class SmartCardReader -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'OK' }).Count",
     ],
@@ -890,8 +971,14 @@ async function startNFC() {
   try {
     nfcChild = spawn(process.execPath, [workerPath], {
       env: {
-        ...process.env,
         ELECTRON_RUN_AS_NODE: '1',
+        PATH: process.env.PATH || '',
+        SYSTEMROOT: process.env.SYSTEMROOT || '',
+        WINDIR: process.env.WINDIR || '',
+        TEMP: process.env.TEMP || '',
+        TMP: process.env.TMP || '',
+        HOME: process.env.HOME || '',
+        USERPROFILE: process.env.USERPROFILE || '',
       },
       stdio: ['ignore', 'pipe', 'pipe'],
       windowsHide: true,
@@ -972,23 +1059,59 @@ function stopNFC() {
   }, 1500);
 }
 
-function handleNFCEvent(msg) {
-  if (isQuitting) return;
-
-  // Send to every hospital tab — active tab alone can miss the user-edit page
+function hospitalTabWebContents() {
   const targets = [];
   for (const tab of tabs.values()) {
-    if (tab.view && tab.view.webContents && !tab.view.webContents.isDestroyed()) {
-      targets.push(tab.view.webContents);
+    const wc = tab.view && tab.view.webContents;
+    if (!wc || wc.isDestroyed()) continue;
+    let url = '';
+    try {
+      url = wc.getURL();
+    } catch (_) {
+      continue;
     }
+    // Only talk to the assigned hospital origin — never to other tabs.
+    if (!isAllowedHospitalUrl(url)) continue;
+    targets.push(wc);
   }
-  if (!targets.length) return;
+  return targets;
+}
 
-  const runInTabs = (js) => {
-    targets.forEach((wc) => {
-      wc.executeJavaScript(js).catch(() => {});
-    });
-  };
+function emitNfcToHospitalTabs(payload) {
+  const targets = hospitalTabWebContents();
+  for (const wc of targets) {
+    try {
+      wc.send('nfc:event', payload);
+    } catch (_) {}
+  }
+
+  // Backward compatible with Yii pages that define window.nfcLogin / nfcLogout.
+  let js = null;
+  switch (payload.event) {
+    case 'unavailable':
+    case 'reader_disconnected':
+      js = 'window.setNFCStatus && window.setNFCStatus(false)';
+      break;
+    case 'reader_connected':
+      js = 'window.setNFCStatus && window.setNFCStatus(true)';
+      break;
+    case 'card_on':
+      js = `window.nfcLogin && window.nfcLogin(${JSON.stringify(String(payload.uid || '').toUpperCase())})`;
+      break;
+    case 'card_off':
+      js = 'window.nfcLogout && window.nfcLogout()';
+      break;
+    default:
+      break;
+  }
+  if (!js) return;
+  for (const wc of targets) {
+    wc.executeJavaScript(js).catch(() => {});
+  }
+}
+
+function handleNFCEvent(msg) {
+  if (isQuitting || !msg || typeof msg !== 'object') return;
 
   switch (msg.event) {
     case 'ready':
@@ -1009,29 +1132,29 @@ function handleNFCEvent(msg) {
         reason: msg.reason || null,
         message: msg.message || null,
       });
-      runInTabs(`window.setNFCStatus && window.setNFCStatus(false)`);
+      emitNfcToHospitalTabs({ event: 'unavailable' });
       break;
 
     case 'reader_connected':
       console.log('NFC reader connected:', msg.name);
-      runInTabs(`window.setNFCStatus && window.setNFCStatus(true)`);
+      emitNfcToHospitalTabs({ event: 'reader_connected', name: msg.name });
       break;
 
     case 'card_on': {
       const uid = String(msg.uid || '').toUpperCase();
       console.log('Card detected:', uid);
-      runInTabs(`window.nfcLogin && window.nfcLogin(${JSON.stringify(uid)})`);
+      emitNfcToHospitalTabs({ event: 'card_on', uid });
       break;
     }
 
     case 'card_off':
       console.log('Card removed');
-      runInTabs(`window.nfcLogout && window.nfcLogout()`);
+      emitNfcToHospitalTabs({ event: 'card_off' });
       break;
 
     case 'reader_disconnected':
       console.log('NFC reader disconnected');
-      runInTabs(`window.setNFCStatus && window.setNFCStatus(false)`);
+      emitNfcToHospitalTabs({ event: 'reader_disconnected' });
       break;
 
     case 'error':
@@ -1111,34 +1234,53 @@ app.whenReady().then(async () => {
     }
   }
 
-  session.defaultSession.setPermissionRequestHandler((_wc, permission, callback) => {
-    callback(project.microphone && allowMediaPermission(permission));
+  const micAllowedForContents = (wc) => {
+    if (!project.microphone || !wc || wc.isDestroyed()) return false;
+    let url = '';
+    try {
+      url = wc.getURL();
+    } catch (_) {
+      return false;
+    }
+    return isAllowedHospitalUrl(url);
+  };
+
+  session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
+    callback(micAllowedForContents(wc) && allowMediaPermission(permission));
   });
 
-  session.defaultSession.setPermissionCheckHandler((_wc, permission) => {
-    return project.microphone && allowMediaPermission(permission);
+  session.defaultSession.setPermissionCheckHandler((wc, permission) => {
+    return micAllowedForContents(wc) && allowMediaPermission(permission);
   });
 
-  ipcMain.on('tabs:create', (_event, url) => {
-    createTab(url || project.url);
+  ipcMain.on('tabs:create', (event, url) => {
+    if (!tabBarView || event.sender !== tabBarView.webContents) return;
+    createTab(isAllowedHospitalUrl(url) ? url : project.url);
   });
 
-  ipcMain.on('tabs:activate', (_event, id) => {
+  ipcMain.on('tabs:activate', (event, id) => {
+    if (!tabBarView || event.sender !== tabBarView.webContents) return;
     activateTab(id);
   });
 
-  ipcMain.on('tabs:close', (_event, id) => {
+  ipcMain.on('tabs:close', (event, id) => {
+    if (!tabBarView || event.sender !== tabBarView.webContents) return;
     closeTab(id);
   });
 
-  ipcMain.on('tabs:reload', (_event, id) => {
+  ipcMain.on('tabs:reload', (event, id) => {
+    if (!tabBarView || event.sender !== tabBarView.webContents) return;
     reloadTab(id);
   });
 
+  ipcMain.handle('devtools:allowed', () => !app.isPackaged);
+
   ipcMain.handle('devtools:open', (event) => {
+    if (app.isPackaged) return false;
     if (event.sender && !event.sender.isDestroyed()) {
       event.sender.openDevTools({ mode: 'detach' });
     }
+    return true;
   });
 
   await ensurePermissionThenStart();

@@ -1,6 +1,6 @@
 {
   "name": "hospital-desktop",
-  "version": "1.0.7",
+  "version": "1.0.8",
   "description": "Hospital desktop app with NFC login",
   "main": "main.js",
   "author": "Hospital",
@@ -42,7 +42,7 @@
       "presence.js",
       "deviceId.js",
       "nfc-worker.js",
-      "config.json",
+      "config.example.json",
       "preload.js",
       "preload-tabs.js",
       "preload-waiting.js",

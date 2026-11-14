@@ -120,7 +120,7 @@ function queueLog(entry) {
     level: ['error', 'warn', 'info', 'hang'].includes(level) ? level : 'error',
     category: category || 'general',
     message,
-    context: safeContext(entry.context),
+    context: queueContext(entry.context),
     app_version: entry.app_version || activeAppVersion || undefined,
   });
 
