@@ -264,6 +264,66 @@ function wireTabWindowOpen(tab) {
   });
 }
 
+function reportDesktopLog(level, category, message, context) {
+  try {
+    if (project && project.control) {
+      presence.setControl(project.control, app.getVersion());
+    }
+    presence.reportLog(level, category, message, context);
+  } catch (err) {
+    console.warn('Failed to queue desktop log:', err.message);
+  }
+}
+
+function wireWebContentsDiagnostics(webContents, label) {
+  if (!webContents || webContents.isDestroyed()) return;
+
+  let hangStartedAt = null;
+
+  webContents.on('unresponsive', () => {
+    hangStartedAt = Date.now();
+    const title = windowTitleWithVersion(project && project.title ? project.title : 'Desktop');
+    reportDesktopLog('hang', 'not_responding', `${label} not responding (OS may show "${title} (Не отвечает)")`, {
+      label,
+      url: (() => {
+        try {
+          return webContents.getURL();
+        } catch (_) {
+          return null;
+        }
+      })(),
+      title,
+    });
+  });
+
+  webContents.on('responsive', () => {
+    const durationMs = hangStartedAt ? Date.now() - hangStartedAt : null;
+    hangStartedAt = null;
+    reportDesktopLog('warn', 'not_responding', `${label} became responsive again`, {
+      label,
+      duration_ms: durationMs,
+    });
+  });
+
+  webContents.on('render-process-gone', (_event, details) => {
+    reportDesktopLog('error', 'renderer', `${label} renderer process gone`, {
+      label,
+      reason: details && details.reason,
+      exit_code: details && details.exitCode,
+    });
+  });
+
+  webContents.on('did-fail-load', (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+    if (!isMainFrame || errorCode === -3) return; // -3 = aborted
+    reportDesktopLog('error', 'page_load', `${label} failed to load page`, {
+      label,
+      error_code: errorCode,
+      error_description: errorDescription,
+      url: validatedURL,
+    });
+  });
+}
+
 function createTab(url = project.url) {
   if (isQuitting || !win || win.isDestroyed()) return null;
 
@@ -287,6 +347,7 @@ function createTab(url = project.url) {
   tabs.set(id, tab);
   win.contentView.addChildView(view);
   wireTabWindowOpen(tab);
+  wireWebContentsDiagnostics(view.webContents, `tab:${id}`);
 
   view.webContents.on('did-navigate', (_event, navigatedUrl) => {
     updateTabFromUrl(tab, navigatedUrl);
@@ -418,6 +479,7 @@ function createWaitingWindow() {
   });
 
   waitingWin.setMenuBarVisibility(false);
+  wireWebContentsDiagnostics(waitingWin.webContents, 'waiting');
   waitingWin.loadFile(path.join(__dirname, 'waiting.html'));
 
   waitingWin.webContents.on('did-finish-load', () => {
@@ -459,6 +521,8 @@ async function checkPresence(kind) {
   if (!devicePayload) {
     devicePayload = await presence.collectDeviceInfo(app.getVersion());
   }
+
+  presence.setControl(project.control, app.getVersion());
 
   const result =
     kind === 'register'
@@ -607,6 +671,10 @@ async function ensurePermissionThenStart() {
     beginPermissionLoop();
   } catch (err) {
     console.error('Permission check failed:', err);
+    reportDesktopLog('error', 'control_send', `Permission check failed: ${err.message}`, {
+      action: 'register',
+      error: err.message,
+    });
     sendWaitingUpdate({
       allowed: false,
       status: 'pending',
@@ -636,6 +704,7 @@ function createWindow() {
   });
 
   win.contentView.addChildView(tabBarView);
+  wireWebContentsDiagnostics(tabBarView.webContents, 'tab-bar');
   tabBarView.webContents.loadFile(path.join(__dirname, 'tabs.html'));
 
   tabBarView.webContents.on('did-finish-load', () => {
@@ -647,6 +716,7 @@ function createWindow() {
   win.on('close', () => {
     isQuitting = true;
     stopNFC();
+    presence.flushLogs().catch(() => {});
   });
 
   win.on('closed', () => {
@@ -897,6 +967,7 @@ app.on('before-quit', () => {
   isQuitting = true;
   stopPresenceHeartbeat();
   stopNFC();
+  presence.flushLogs().catch(() => {});
 });
 
 app.on('window-all-closed', () => {
@@ -908,8 +979,30 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
+app.on('child-process-gone', (_event, details) => {
+  if (isQuitting) return;
+  reportDesktopLog('error', 'process', 'Child process gone', {
+    type: details && details.type,
+    reason: details && details.reason,
+    exit_code: details && details.exitCode,
+    name: details && details.name,
+  });
+});
+
 // Prevent uncaught NFC/native errors from showing a dialog on quit
 process.on('uncaughtException', (err) => {
   if (isQuitting) return;
   console.error('Uncaught exception:', err);
+  reportDesktopLog('error', 'exception', `Uncaught exception: ${err && err.message ? err.message : String(err)}`, {
+    stack: err && err.stack ? String(err.stack).slice(0, 1500) : null,
+  });
+});
+
+process.on('unhandledRejection', (reason) => {
+  if (isQuitting) return;
+  const message = reason && reason.message ? reason.message : String(reason);
+  console.error('Unhandled rejection:', reason);
+  reportDesktopLog('error', 'exception', `Unhandled rejection: ${message}`, {
+    stack: reason && reason.stack ? String(reason.stack).slice(0, 1500) : null,
+  });
 });

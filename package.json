@@ -1,6 +1,6 @@
 {
   "name": "hospital-desktop",
-  "version": "1.0.4",
+  "version": "1.0.6",
   "description": "Hospital desktop app with NFC login",
   "main": "main.js",
   "author": "Hospital",
