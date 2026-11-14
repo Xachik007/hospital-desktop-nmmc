@@ -128,13 +128,40 @@ function redactUrl(rawUrl) {
   }
 }
 
+function resolveHospitalUrl(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== 'string') return null;
+  try {
+    return new URL(rawUrl, project && project.url ? project.url : undefined);
+  } catch (_) {
+    return null;
+  }
+}
+
 function isAllowedHospitalUrl(rawUrl) {
   if (!project || !project.origin) return false;
   if (!rawUrl || rawUrl === 'about:blank') return false;
+
+  const target = resolveHospitalUrl(rawUrl);
+  if (!target) return false;
+  if (target.protocol !== 'http:' && target.protocol !== 'https:') return false;
+
   try {
-    return new URL(rawUrl).origin === project.origin;
+    const assigned = new URL(project.origin);
+    // Same host is allowed over http or https. Many hospital/login servers
+    // still redirect https → http (or the reverse), which would otherwise
+    // look like a different origin and leave a blank tab.
+    return target.hostname.toLowerCase() === assigned.hostname.toLowerCase();
   } catch (_) {
     return false;
+  }
+}
+
+function rememberHospitalNavigation(rawUrl) {
+  const target = resolveHospitalUrl(rawUrl);
+  if (!target || !isAllowedHospitalUrl(target.href)) return;
+  project.origin = target.origin;
+  if (!project.url) {
+    project.url = target.href;
   }
 }
 
@@ -324,14 +351,16 @@ function updateTabFromUrl(tab, rawUrl) {
 
 function wireTabWindowOpen(tab) {
   tab.view.webContents.setWindowOpenHandler(({ url }) => {
-    if (isAllowedHospitalUrl(url)) {
-      createTab(url);
+    const resolved = url ? resolveHospitalUrl(url) : null;
+    const candidate = resolved ? resolved.href : url;
+    if (isAllowedHospitalUrl(candidate)) {
+      createTab(candidate);
     } else if (!url || url === 'about:blank') {
       createTab(project.url);
     } else {
-      console.warn('Blocked window.open to disallowed origin:', redactUrl(url));
+      console.warn('Blocked window.open to disallowed origin:', redactUrl(candidate || url));
       reportDesktopLog('warn', 'navigation', 'Blocked window.open outside hospital origin', {
-        url: redactUrl(url),
+        url: redactUrl(candidate || url),
       });
     }
     return { action: 'deny' };
@@ -342,11 +371,17 @@ function wireTabNavigationGuard(webContents) {
   if (!webContents || webContents.isDestroyed()) return;
 
   const blockIfDisallowed = (event, url) => {
-    if (isAllowedHospitalUrl(url)) return;
+    const targetUrl = (event && event.url) || url;
+    const isMainFrame = !event || event.isMainFrame !== false;
+    if (!isMainFrame) return;
+    if (isAllowedHospitalUrl(targetUrl)) {
+      rememberHospitalNavigation(targetUrl);
+      return;
+    }
     event.preventDefault();
-    console.warn('Blocked navigation outside hospital origin:', redactUrl(url));
+    console.warn('Blocked navigation outside hospital origin:', redactUrl(targetUrl));
     reportDesktopLog('warn', 'navigation', 'Blocked navigation outside hospital origin', {
-      url: redactUrl(url),
+      url: redactUrl(targetUrl),
     });
   };
 
@@ -417,11 +452,14 @@ function wireWebContentsDiagnostics(webContents, label) {
 function createTab(url = project.url) {
   if (isQuitting || !win || win.isDestroyed()) return null;
 
-  const requested = url || project.url;
+  const resolved = resolveHospitalUrl(url || project.url);
+  const requested = resolved ? resolved.href : url || project.url;
   if (!isAllowedHospitalUrl(requested)) {
     console.warn('Refusing to open tab outside hospital origin:', redactUrl(requested));
     if (!project.url || !isAllowedHospitalUrl(project.url)) return null;
     url = project.url;
+  } else {
+    url = requested;
   }
 
   const id = nextTabId++;
@@ -444,15 +482,19 @@ function createTab(url = project.url) {
   wireWebContentsDiagnostics(view.webContents, `tab:${id}`);
 
   view.webContents.on('did-navigate', (_event, navigatedUrl) => {
+    rememberHospitalNavigation(navigatedUrl);
     updateTabFromUrl(tab, navigatedUrl);
   });
 
   view.webContents.on('did-navigate-in-page', (_event, navigatedUrl) => {
+    rememberHospitalNavigation(navigatedUrl);
     updateTabFromUrl(tab, navigatedUrl);
   });
 
   view.webContents.on('did-finish-load', () => {
-    updateTabFromUrl(tab, view.webContents.getURL());
+    const currentUrl = view.webContents.getURL();
+    rememberHospitalNavigation(currentUrl);
+    updateTabFromUrl(tab, currentUrl);
   });
 
   view.webContents.on('destroyed', () => {
