@@ -617,11 +617,21 @@ async function startHospitalApp(assignedProject) {
 
   stopPresenceHeartbeat();
   heartbeatTimer = setInterval(() => {
-    if (isQuitting || !devicePayload) return;
-    presence
-      .heartbeat(project.control, devicePayload)
-      .then((result) => {
+    if (isQuitting) return;
+    (async () => {
+      try {
+        // Refresh network info each heartbeat so IP changes do not look like a new PC.
+        devicePayload = await presence.collectDeviceInfo(app.getVersion());
+        const result = await presence.heartbeat(project.control, devicePayload);
         if (result.allowed) return;
+
+        // Only kick out on explicit block / project off / revoked — not transient errors.
+        const status = String(result.status || '');
+        if (status !== 'blocked' && status !== 'pending') {
+          console.warn('Heartbeat not allowed (ignored):', result.message);
+          return;
+        }
+
         console.warn('Permission lost:', result.message);
         stopPresenceHeartbeat();
         stopNFC();
@@ -633,10 +643,10 @@ async function startHospitalApp(assignedProject) {
           win.close();
         }
         beginPermissionLoop();
-      })
-      .catch((err) => {
+      } catch (err) {
         console.warn('Heartbeat failed:', err.message);
-      });
+      }
+    })();
   }, project.control.heartbeatSeconds * 1000);
 }
 
