@@ -45,11 +45,26 @@ function pickNetworkIdentity() {
   };
 }
 
+function withTimeout(promise, ms) {
+  let timer = null;
+  return Promise.race([
+    promise.finally(() => {
+      if (timer) clearTimeout(timer);
+    }),
+    new Promise((_, reject) => {
+      timer = setTimeout(() => reject(new Error(`Timed out after ${ms}ms`)), ms);
+    }),
+  ]);
+}
+
 async function fetchPublicIp() {
   try {
-    const response = await net.fetch('https://api.ipify.org?format=json', {
-      method: 'GET',
-    });
+    const response = await withTimeout(
+      net.fetch('https://api.ipify.org?format=json', {
+        method: 'GET',
+      }),
+      5000
+    );
     if (!response.ok) {
       return null;
     }

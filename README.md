@@ -53,7 +53,7 @@ Project settings live in `config.json`. Change this file, then start the app aga
 |-------|---------|
 | `title` | Default window title |
 | `width` / `height` | Window size |
-| `nfc` | `true` to use the card reader, `false` to turn it off |
+| `nfc` | `true` = try NFC when driver/service is available; if not, app still runs without NFC. `false` = never use NFC |
 | `microphone` | `true` to allow the microphone, `false` to turn it off |
 | `control.url` | Xlab control website used for PC permission |
 | `control.token` | Desktop API token from the control server `.env` |

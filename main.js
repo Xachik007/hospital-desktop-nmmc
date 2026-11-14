@@ -1,4 +1,5 @@
 const { app, BaseWindow, BrowserWindow, dialog, session, ipcMain, WebContentsView, systemPreferences, Menu } = require('electron');
+const { spawn } = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const presence = require('./presence');
@@ -125,7 +126,9 @@ const APP_ICON = path.join(
 let win = null;
 let waitingWin = null;
 let tabBarView = null;
-let nfcInstance = null;
+let nfcChild = null;
+let nfcReadyTimer = null;
+let nfcStdoutBuffer = '';
 let nextTabId = 1;
 const tabs = new Map(); // id -> { id, view, title, url }
 let activeTabId = null;
@@ -554,7 +557,17 @@ async function startHospitalApp(assignedProject) {
 
   createWindow();
   allowQuitOnWaitingClose = true;
-  if (project.nfc) startNFC();
+  // Defer NFC so the hospital window can paint first. NFC must never run in
+  // the main process — pcsclite can hang and Windows shows "(Не отвечает)".
+  if (project.nfc) {
+    setTimeout(() => {
+      if (isQuitting) return;
+      startNFC().catch((err) => {
+        console.warn('NFC start failed:', err.message);
+        reportDesktopLog('error', 'nfc', `NFC start failed: ${err.message}`, {});
+      });
+    }, 1500);
+  }
 
   updater.setupAutoUpdates(project, {
     appIsPackaged: app.isPackaged,
@@ -732,80 +745,221 @@ function createWindow() {
   win.focus();
 }
 
+function parseNfcWorkerChunk(chunk) {
+  nfcStdoutBuffer += chunk.toString('utf8');
+  const lines = nfcStdoutBuffer.split(/\r?\n/);
+  nfcStdoutBuffer = lines.pop() || '';
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    try {
+      handleNFCEvent(JSON.parse(trimmed));
+    } catch (err) {
+      console.warn('Bad NFC worker line:', trimmed, err.message);
+    }
+  }
+}
+
+function execFileText(command, args, timeoutMs = 4000) {
+  const { execFile } = require('child_process');
+  return new Promise((resolve) => {
+    execFile(
+      command,
+      args,
+      { windowsHide: true, timeout: timeoutMs, encoding: 'utf8' },
+      (err, stdout, stderr) => {
+        resolve({
+          ok: !err,
+          stdout: String(stdout || ''),
+          stderr: String(stderr || ''),
+          error: err ? err.message : null,
+        });
+      }
+    );
+  });
+}
+
+async function ensureWindowsSmartCardService() {
+  const query = await execFileText('sc', ['query', 'SCardSvr']);
+  if (/STATE\s*:\s*\d+\s+RUNNING/i.test(query.stdout)) {
+    return { running: true, started: false };
+  }
+
+  // Best-effort start (no admin prompt). If it fails, we simply skip NFC.
+  const start = await execFileText('sc', ['start', 'SCardSvr'], 6000);
+  const again = await execFileText('sc', ['query', 'SCardSvr']);
+  const running = /STATE\s*:\s*\d+\s+RUNNING/i.test(again.stdout);
+  return {
+    running,
+    started: running,
+    startError: start.ok ? null : start.error || start.stderr || start.stdout,
+  };
+}
+
+async function windowsHasSmartCardReader() {
+  // Prefer PnP SmartCardReader devices with Status OK.
+  const ps = await execFileText(
+    'powershell.exe',
+    [
+      '-NoProfile',
+      '-ExecutionPolicy',
+      'Bypass',
+      '-Command',
+      "(Get-PnpDevice -Class SmartCardReader -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'OK' }).Count",
+    ],
+    6000
+  );
+
+  if (ps.ok) {
+    const count = Number(String(ps.stdout).trim());
+    if (Number.isFinite(count)) {
+      return count > 0;
+    }
+  }
+
+  // Fallback: winscard.dll present + service running is not enough alone,
+  // but if PnP query fails, allow a cautious try (worker has hang timeout).
+  return null;
+}
+
 /**
- * NFC runs inside the Electron main process so the native pcsclite
- * module matches Electron's ABI (packaged apps cannot use system Node).
+ * NFC is optional. App must always open the hospital site.
+ * Use NFC only when drivers/service look available; otherwise skip quietly.
  */
-function startNFC() {
-  if (nfcInstance) return;
+async function detectNfcAvailability() {
+  if (!project || project.nfc === false) {
+    return { available: false, reason: 'disabled_in_config' };
+  }
 
-  let NFC;
-  try {
-    ({ NFC } = require('nfc-pcsc'));
-  } catch (err) {
-    console.warn('NFC not available (native module), manual login only:', err.message);
+  const workerPath = path.join(__dirname, 'nfc-worker.js');
+  if (!fs.existsSync(workerPath)) {
+    return { available: false, reason: 'worker_missing' };
+  }
+
+  if (process.platform === 'win32') {
+    const service = await ensureWindowsSmartCardService();
+    if (!service.running) {
+      return {
+        available: false,
+        reason: 'smartcard_service_not_running',
+        detail: service.startError || 'SCardSvr not running',
+      };
+    }
+
+    const readers = await windowsHasSmartCardReader();
+    if (readers === false) {
+      return { available: false, reason: 'no_smartcard_reader_driver' };
+    }
+  }
+
+  return { available: true, reason: 'ok' };
+}
+
+/**
+ * NFC runs in a separate Electron Node process so pcsclite cannot freeze
+ * the UI thread (Windows title becomes "… (Не отвечает)").
+ * If NFC is unavailable, the app continues without it.
+ */
+async function startNFC() {
+  if (nfcChild || isQuitting) return;
+
+  const availability = await detectNfcAvailability();
+  if (!availability.available) {
+    console.log(`NFC not used (${availability.reason}). App continues without NFC.`);
+    if (availability.reason !== 'disabled_in_config') {
+      reportDesktopLog('info', 'nfc', `Running without NFC: ${availability.reason}`, {
+        reason: availability.reason,
+        detail: availability.detail || null,
+      });
+    }
     return;
   }
 
+  const workerPath = path.join(__dirname, 'nfc-worker.js');
+
   try {
-    nfcInstance = new NFC();
+    nfcChild = spawn(process.execPath, [workerPath], {
+      env: {
+        ...process.env,
+        ELECTRON_RUN_AS_NODE: '1',
+      },
+      stdio: ['ignore', 'pipe', 'pipe'],
+      windowsHide: true,
+    });
   } catch (err) {
-    console.warn('NFC init failed, manual login only:', err.message);
-    nfcInstance = null;
+    console.warn('NFC worker spawn failed — continuing without NFC:', err.message);
+    reportDesktopLog('warn', 'nfc', `NFC unavailable, continuing without it: ${err.message}`, {});
+    nfcChild = null;
     return;
   }
 
-  nfcInstance.on('reader', (reader) => {
-    handleNFCEvent({ event: 'reader_connected', name: reader.reader ? reader.reader.name : reader.name });
+  nfcStdoutBuffer = '';
 
-    reader.on('card', (card) => {
-      handleNFCEvent({ event: 'card_on', uid: card && card.uid });
-    });
-
-    reader.on('card.off', () => {
-      handleNFCEvent({ event: 'card_off' });
-    });
-
-    reader.on('end', () => {
-      handleNFCEvent({ event: 'reader_disconnected' });
-    });
-
-    reader.on('error', (err) => {
-      handleNFCEvent({ event: 'error', message: err && err.message ? err.message : String(err) });
-    });
+  nfcChild.stdout.on('data', (chunk) => parseNfcWorkerChunk(chunk));
+  nfcChild.stderr.on('data', (chunk) => {
+    const text = String(chunk).trim();
+    if (text) console.warn('NFC worker stderr:', text);
   });
 
-  nfcInstance.on('error', (err) => {
-    handleNFCEvent({ event: 'error', message: err && err.message ? err.message : String(err) });
+  nfcChild.on('error', (err) => {
+    console.warn('NFC worker error — continuing without NFC:', err.message);
+    reportDesktopLog('warn', 'nfc', `NFC worker error, continuing without NFC: ${err.message}`, {});
+    nfcChild = null;
   });
 
-  handleNFCEvent({ event: 'ready' });
+  nfcChild.on('exit', (code, signal) => {
+    if (nfcReadyTimer) {
+      clearTimeout(nfcReadyTimer);
+      nfcReadyTimer = null;
+    }
+    if (!isQuitting && code && code !== 0) {
+      console.warn(`NFC worker exited (code ${code}) — app keeps running without NFC`);
+      reportDesktopLog('info', 'nfc', `NFC stopped (exit ${code}); app continues without NFC`, {
+        code,
+        signal,
+      });
+    }
+    nfcChild = null;
+  });
+
+  // If pcsclite hangs inside the worker, kill it so NFC fails soft.
+  nfcReadyTimer = setTimeout(() => {
+    nfcReadyTimer = null;
+    if (!nfcChild) return;
+    console.warn('NFC worker hung — killing it. App continues without NFC.');
+    reportDesktopLog(
+      'warn',
+      'nfc',
+      'NFC driver hang during startup; NFC disabled for this session. Hospital app kept running.',
+      {}
+    );
+    try {
+      nfcChild.kill();
+    } catch (_) {}
+    nfcChild = null;
+  }, 8000);
 }
 
 function stopNFC() {
-  if (!nfcInstance) return;
+  if (nfcReadyTimer) {
+    clearTimeout(nfcReadyTimer);
+    nfcReadyTimer = null;
+  }
+
+  if (!nfcChild) return;
+
+  const child = nfcChild;
+  nfcChild = null;
 
   try {
-    const readers = nfcInstance.readers;
-    if (readers) {
-      const list = readers instanceof Map ? Array.from(readers.values()) : Object.values(readers);
-      for (const reader of list) {
-        try {
-          if (reader && typeof reader.close === 'function') reader.close();
-        } catch (_) {}
-      }
-    }
+    child.kill();
   } catch (_) {}
 
-  try {
-    if (typeof nfcInstance.close === 'function') nfcInstance.close();
-  } catch (_) {}
-
-  try {
-    nfcInstance.removeAllListeners();
-  } catch (_) {}
-
-  nfcInstance = null;
+  setTimeout(() => {
+    try {
+      if (!child.killed) child.kill('SIGKILL');
+    } catch (_) {}
+  }, 1500);
 }
 
 function handleNFCEvent(msg) {
@@ -829,6 +983,23 @@ function handleNFCEvent(msg) {
   switch (msg.event) {
     case 'ready':
       console.log('NFC worker ready');
+      if (nfcReadyTimer) {
+        clearTimeout(nfcReadyTimer);
+        nfcReadyTimer = null;
+      }
+      break;
+
+    case 'unavailable':
+      console.log('NFC unavailable — continuing without NFC:', msg.message || msg.reason);
+      if (nfcReadyTimer) {
+        clearTimeout(nfcReadyTimer);
+        nfcReadyTimer = null;
+      }
+      reportDesktopLog('info', 'nfc', `NFC unavailable (${msg.reason || 'unknown'}), app continues without NFC`, {
+        reason: msg.reason || null,
+        message: msg.message || null,
+      });
+      runInTabs(`window.setNFCStatus && window.setNFCStatus(false)`);
       break;
 
     case 'reader_connected':
@@ -854,7 +1025,7 @@ function handleNFCEvent(msg) {
       break;
 
     case 'error':
-      console.warn('NFC error:', msg.message);
+      console.warn('NFC error (ignored, app keeps running):', msg.message);
       break;
   }
 }
