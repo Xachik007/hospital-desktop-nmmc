@@ -165,6 +165,13 @@ function rememberHospitalNavigation(rawUrl) {
   }
 }
 
+// Persistent partition so Yii2 auth cookies survive Electron restarts (Remember Me).
+const MEDLINE_SESSION_PARTITION = 'persist:medline';
+
+function getMedlineSession() {
+  return session.fromPartition(MEDLINE_SESSION_PARTITION);
+}
+
 function secureWebPreferences(preloadFile) {
   return {
     preload: path.join(__dirname, preloadFile),
@@ -172,7 +179,97 @@ function secureWebPreferences(preloadFile) {
     nodeIntegration: false,
     sandbox: true,
     webSecurity: true,
+    allowRunningInsecureContent: false,
+    partition: MEDLINE_SESSION_PARTITION,
   };
+}
+
+const authCookiePrepDone = new Set();
+
+function flushMedlineCookies() {
+  return new Promise((resolve) => {
+    try {
+      getMedlineSession().cookies.flushStore(() => resolve());
+    } catch (_) {
+      resolve();
+    }
+  });
+}
+
+/**
+ * Without Remember Me, Electron would still restore PHPSESSID from a persistent partition.
+ * If no Yii identity cookie exists, clear session cookies so session-only logins do not auto-restore.
+ * Run once per origin at app start — never on every new tab (that wiped active sessions).
+ */
+async function prepareAuthCookiesForOrigin(originUrl) {
+  try {
+    const origin = new URL(originUrl).origin;
+    if (authCookiePrepDone.has(origin)) return;
+    authCookiePrepDone.add(origin);
+
+    const ses = getMedlineSession();
+    const cookies = await ses.cookies.get({ url: origin });
+    const hasRemember = cookies.some((c) => c.name === '_medline_identity' && !!c.value);
+    if (hasRemember) {
+      console.log('Remember-me cookie found for', origin);
+      return;
+    }
+
+    await Promise.all(
+      cookies
+        .filter((c) =>
+          c.name === 'PHPSESSID' ||
+          c.name === '_csrf' ||
+          c.name === '_medline_identity' ||
+          c.name === 'advanced-backend'
+        )
+        .map((c) => ses.cookies.remove(`${origin}/`, c.name).catch(() => {}))
+    );
+  } catch (err) {
+    console.warn('prepareAuthCookiesForOrigin failed:', err && err.message);
+  }
+}
+
+function wireMedlineCookiePersistence() {
+  try {
+    const ses = getMedlineSession();
+    ses.cookies.on('changed', (_event, cookie, _cause, removed) => {
+      if (!cookie || removed) return;
+      if (cookie.name === '_medline_identity' || cookie.name === 'medline_account_hint') {
+        flushMedlineCookies().catch(() => {});
+      }
+    });
+  } catch (err) {
+    console.warn('wireMedlineCookiePersistence failed:', err && err.message);
+  }
+}
+
+
+/**
+ * When one Electron tab logs out, reload other tabs to the login/chooser page
+ * so they cannot keep showing another doctor's authenticated patient UI.
+ */
+function syncTabsAfterAuthNavigation(sourceTabId, navigatedUrl) {
+  try {
+    const u = new URL(navigatedUrl);
+    const path = (u.pathname || '').replace(/\/+$/, '') || '/';
+    const isLogout = path.endsWith('/site/logout');
+    const isLoginSwitch = path.endsWith('/site/login') && (u.searchParams.get('switched') === '1' || u.searchParams.get('chooser') === '1');
+    if (!isLogout && !isLoginSwitch) return;
+    const loginUrl = `${u.origin}/site/login?chooser=1&switched=1`;
+    for (const [id, tab] of tabs.entries()) {
+      if (id === sourceTabId) continue;
+      if (!tab.view || !tab.view.webContents || tab.view.webContents.isDestroyed()) continue;
+      let current = '';
+      try { current = tab.view.webContents.getURL(); } catch (_) { continue; }
+      if (!isAllowedHospitalUrl(current)) continue;
+      // Skip tabs already on login
+      if (/\/site\/login\b/i.test(current) && !/\/site\/logout\b/i.test(current)) continue;
+      tab.view.webContents.loadURL(loginUrl);
+    }
+  } catch (err) {
+    console.warn('syncTabsAfterAuthNavigation failed:', err && err.message);
+  }
 }
 
 let project = null;
@@ -484,6 +581,7 @@ function createTab(url = project.url) {
   view.webContents.on('did-navigate', (_event, navigatedUrl) => {
     rememberHospitalNavigation(navigatedUrl);
     updateTabFromUrl(tab, navigatedUrl);
+    syncTabsAfterAuthNavigation(id, navigatedUrl);
   });
 
   view.webContents.on('did-navigate-in-page', (_event, navigatedUrl) => {
@@ -864,6 +962,7 @@ function createWindow() {
   win.on('close', () => {
     isQuitting = true;
     stopNFC();
+    flushMedlineCookies().catch(() => {});
     presence.flushLogs().catch(() => {});
   });
 
@@ -874,10 +973,15 @@ function createWindow() {
     win = null;
   });
 
-  createTab(project.url);
-  layoutViews();
-  win.show();
-  win.focus();
+  prepareAuthCookiesForOrigin(project.url)
+    .catch(() => {})
+    .finally(() => {
+      if (isQuitting || !win || win.isDestroyed()) return;
+      createTab(project.url);
+      layoutViews();
+      win.show();
+      win.focus();
+    });
 }
 
 function parseNfcWorkerChunk(chunk) {
@@ -1230,6 +1334,8 @@ app.whenReady().then(async () => {
     return;
   }
 
+  wireMedlineCookiePersistence();
+
   try {
     app.setAboutPanelOptions({
       applicationName: project.title,
@@ -1238,7 +1344,7 @@ app.whenReady().then(async () => {
     });
   } catch (_) {}
 
-  // Keep a small menu so users can check for updates manually
+  // Edit roles are required for Ctrl/Cmd+C/V/X/A in web inputs.
   const template = [
     ...(process.platform === 'darwin'
       ? [{
@@ -1251,10 +1357,43 @@ app.whenReady().then(async () => {
               click: () => updater.checkForUpdatesManual(),
             },
             { type: 'separator' },
+            { role: 'services' },
+            { type: 'separator' },
+            { role: 'hide' },
+            { role: 'hideOthers' },
+            { role: 'unhide' },
+            { type: 'separator' },
             { role: 'quit' },
           ],
         }]
       : []),
+    {
+      label: 'Edit',
+      submenu: [
+        { role: 'undo' },
+        { role: 'redo' },
+        { type: 'separator' },
+        { role: 'cut' },
+        { role: 'copy' },
+        { role: 'paste' },
+        { role: 'pasteAndMatchStyle' },
+        { role: 'delete' },
+        { role: 'selectAll' },
+      ],
+    },
+    {
+      label: 'View',
+      submenu: [
+        { role: 'reload' },
+        { role: 'forceReload' },
+        { type: 'separator' },
+        { role: 'resetZoom' },
+        { role: 'zoomIn' },
+        { role: 'zoomOut' },
+        { type: 'separator' },
+        { role: 'togglefullscreen' },
+      ],
+    },
     {
       label: 'Help',
       submenu: [
@@ -1287,11 +1426,12 @@ app.whenReady().then(async () => {
     return isAllowedHospitalUrl(url);
   };
 
-  session.defaultSession.setPermissionRequestHandler((wc, permission, callback) => {
+  const medlineSession = getMedlineSession();
+  medlineSession.setPermissionRequestHandler((wc, permission, callback) => {
     callback(micAllowedForContents(wc) && allowMediaPermission(permission));
   });
 
-  session.defaultSession.setPermissionCheckHandler((wc, permission) => {
+  medlineSession.setPermissionCheckHandler((wc, permission) => {
     return micAllowedForContents(wc) && allowMediaPermission(permission);
   });
 
@@ -1332,6 +1472,7 @@ app.on('before-quit', () => {
   isQuitting = true;
   stopPresenceHeartbeat();
   stopNFC();
+  flushMedlineCookies().catch(() => {});
   presence.flushLogs().catch(() => {});
 });
 
